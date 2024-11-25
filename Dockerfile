@@ -22,10 +22,10 @@ ENV PATH="/opt/conda/bin:$PATH"
 COPY . /pre-rob
 
 # Make setup.sh executable
-RUN chmod +x /pre-rob/setup.sh
+RUN chmod +x /pre-rob/rob-app/setup.sh
 
 # Run the setup script to install dependencies
-RUN /bin/bash -c "/pre-rob/setup.sh"
+RUN /bin/bash -c "/pre-rob/rob-app/setup.sh"
 
 # Set entrypoint to activate the environment and run the app
 ENTRYPOINT ["/bin/bash", "-c", "source /opt/conda/etc/profile.d/conda.sh && conda activate rob && python rob.py $@"]
