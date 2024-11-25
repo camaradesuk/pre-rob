@@ -1,7 +1,7 @@
 set -e
 echo "Setting conda environment.."
 cd rob-pre/rob-app
-conda env create --file env_rob.yaml
+conda env create --file env.yaml
 conda activate rob
 
 echo "Downloading spacy module.."
