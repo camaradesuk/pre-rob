@@ -105,7 +105,7 @@ class PreRob():
           
     def pred_probs(self, num_sents=0): 
         if self.txt_paths == []:
-            output = {"message": "Folder/TXTs not found"}  # folder doesn't exist or no txt files found in the folder
+            output = [{"message": "Folder/TXTs not found"}]  # folder doesn't exist or no txt files found in the folder
             
         else:    
             output = []   
@@ -156,12 +156,16 @@ class PreRob():
 import argparse
 parser = argparse.ArgumentParser(description='Get CSV input')
 parser.add_argument('-p', "--csv", nargs="?", type=str, default=None, help='Absolute path of csv input file')
+parser.add_argument('-o', '--output', required=True, help='Absolute path of output CSV file.')
 parser.add_argument('-s', "--sent", nargs="?", type=int, default=0, help='Number of sentences extracted')
 
 args = parser.parse_args()
 txt_info = args.csv
+output_path = args.output
 # txt_info = os.path.join(os.getcwd(), args.csv)
 num_sents = int(args.sent)
+# Ensure the output directory exists
+os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
 p_ref = re.compile(r"(.*Reference\s{0,}\n)|(.*References\s{0,}\n)|(.*Reference list\s{0,}\n)|(.*REFERENCE\s{0,}\n)|(.*REFERENCES\s{0,}\n)|(.*REFERENCE LIST\s{0,}\n)", 
                    flags=re.DOTALL)
@@ -187,9 +191,12 @@ if txt_info and txt_info.endswith(".csv") == True:
         output = rober.pred_probs(num_sents)
     else:    
         output = rober.pred_probs()
+    if not output or not isinstance(output, list):
+        print("No valid data to process.")
+        exit()
     output_df = pd.DataFrame(output)
-    csv_dir = os.path.dirname(txt_info)
-    output_df.to_csv(os.path.join(csv_dir, 'output.csv'), sep=',', encoding='utf-8')
+    output_df.to_csv(output_path, sep=',', encoding='utf-8')
+    print(f"Output saved to: {output_path}")
 else:
     print("The input file is not csv")
     

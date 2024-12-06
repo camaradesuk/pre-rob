@@ -22,8 +22,4 @@ conda activate rob || {
 echo "Downloading spacy module..."
 python -m spacy download en_core_web_sm
 
-# Download pre-trained weights
-echo "Loading pre-trained weights..."
-gdown "https://drive.google.com/uc?id=18YixZQ4otcZWdAMavy5OviR0579kWrCm" -O pth/dsc_w0.pth.tar
-
 echo "Setup finished successfully."
