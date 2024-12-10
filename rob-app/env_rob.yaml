@@ -118,6 +118,5 @@ dependencies:
   - zlib=1.2.11=h7b6447c_3
   - pip:
     - sentence-transformers==0.3.6
-    - gdown==3.12.2
 prefix: /home/qwang/anaconda3/envs/rob
 
