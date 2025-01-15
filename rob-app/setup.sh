@@ -1,15 +1,25 @@
 set -e
-# echo "Setting conda environment.."
-# cd rob-pome/rob-app
-# conda env create --file env_rob.yaml
-# conda activate rob
+echo "Setting conda environment..."
 
+# Navigate to the correct directory
+cd /pre-rob/rob-app
 
-echo "Downloading spacy module.."
+# Create the conda environment and log errors
+conda env create --file env_rob.yaml || {
+  echo "Failed to create conda environment"
+  exit 1
+}
+
+# Activate the environment
+echo "Activating conda environment..."
+source /opt/conda/etc/profile.d/conda.sh
+conda activate rob || {
+  echo "Failed to activate conda environment"
+  exit 1
+}
+
+# Install SpaCy model
+echo "Downloading spacy module..."
 python -m spacy download en_core_web_sm
 
-echo "====================================================="
-echo "Loading pre-trained weights.."
-curl -c /tmp/cookies "https://drive.google.com/uc?export=download&id=18YixZQ4otcZWdAMavy5OviR0579kWrCm" > /tmp/intermezzo.html
-curl -L -b /tmp/cookies "https://drive.google.com$(cat /tmp/intermezzo.html | grep -Po 'uc-download-link" [^>]* href="\K[^"]*' | sed 's/\&amp;/\&/g')" > pth/dsc_w0.pth.tar
-echo "Finished."
+echo "Setup finished successfully."
