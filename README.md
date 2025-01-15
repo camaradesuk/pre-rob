@@ -8,8 +8,6 @@ Predict reporting scores and extract relevant sentences of five risk of bias ite
 - Compliance of Animal Welfare Regulations
 - Animal Exclusions
 
-### Usage
-
 #### Clone source code
 
 ```
