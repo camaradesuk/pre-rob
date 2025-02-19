@@ -32,8 +32,15 @@ RUN chmod +x /pre-rob/rob-app/setup.sh
 # Run the setup script
 RUN /bin/bash -c "/pre-rob/rob-app/setup.sh"
 
+# Update PATH to use the conda environment's binaries.
+# This makes sure that python (and other commands) run from /opt/conda/envs/rob/bin
+ENV PATH="/opt/conda/envs/rob/bin:$PATH"
+
 # Create input/output folders in the container
 RUN mkdir -p /input /output
 
-# Set entrypoint to activate environment and run the app
-ENTRYPOINT ["/bin/bash", "-c", "source /opt/conda/etc/profile.d/conda.sh && conda activate rob && exec python rob.py -p /input/input.csv -o /output/output.csv"]
+# Activate the environment
+RUN /bin/bash -c "source /opt/conda/etc/profile.d/conda.sh && conda activate rob"
+
+# Set entrypoint to run the app
+ENTRYPOINT ["/bin/bash", "-c", "exec python rob.py -p /input/input.csv -o /output/output.csv"]
