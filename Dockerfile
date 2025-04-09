@@ -1,5 +1,5 @@
 # Base image
-FROM python:3.9-slim
+FROM pytorch/pytorch:2.6.0-cuda12.6-cudnn9-runtime
 
 # Set working directory
 WORKDIR /pre-rob/rob-app
@@ -10,21 +10,16 @@ RUN apt-get update && apt-get install -y \
     bash \
     && apt-get clean
 
-# Install Miniconda and add it to PATH
-RUN wget https://repo.continuum.io/miniconda/Miniconda3-latest-Linux-x86_64.sh -O Miniconda3-latest-Linux-x86_64.sh && \
-    bash Miniconda3-latest-Linux-x86_64.sh -b -p /opt/conda && \
-    rm Miniconda3-latest-Linux-x86_64.sh
-ENV PATH="/opt/conda/bin:$PATH"
+# # Install gdown
+# RUN pip install gdown
 
-# Install gdown
-RUN pip install gdown
-
-# Download pre-trained weights
-RUN mkdir -p pth && \
-    gdown "https://drive.google.com/uc?id=18YixZQ4otcZWdAMavy5OviR0579kWrCm" -O pth/dsc_w0.pth.tar
+# # Download pre-trained weights
+# RUN mkdir -p pth && \
+#     gdown "https://drive.google.com/uc?id=18YixZQ4otcZWdAMavy5OviR0579kWrCm" -O pth/dsc_w0.pth.tar
 
 # Copy project files
 COPY . /pre-rob
+EXPOSE 5678 
 
 # Make the setup script executable
 RUN chmod +x /pre-rob/rob-app/setup.sh

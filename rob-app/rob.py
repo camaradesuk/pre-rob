@@ -24,7 +24,7 @@ import pandas as pd
 
 # import rob_fn
 from rob_fn import load_model, load_model_bert, pred, pred_bert, extract_sent
-          
+        
 #%%
 class PreRob():
     def __init__(self, txt_info):      
@@ -48,7 +48,7 @@ class PreRob():
                 for f in files:
                     if f.endswith(".txt"):
                         txt_paths.append(os.path.join(root, f))
-               
+            
         # if 'txt_info' is a single txt path
         if os.path.exists(txt_info) == True and txt_info.endswith(".txt") == True:
             txt_paths.append(txt_info)
@@ -102,7 +102,7 @@ class PreRob():
         text = re.sub(r'[\s]$', "", text)
     
         return text 
-          
+        
     def pred_probs(self, num_sents=0): 
         if self.txt_paths == []:
             output = [{"message": "Folder/TXTs not found"}]  # folder doesn't exist or no txt files found in the folder
@@ -124,12 +124,12 @@ class PreRob():
                     pi = pred(text, mod3, arg3, TEXT3).astype(float)
                     pw = pred_bert(text, mod4, rob_sent, max_n_sent=30).astype(float)
                     pe = pred(text, mod5, arg5, TEXT5).astype(float)
-                    					
+                                        
                     co += 1
                     print('{} files done.'.format(co))
                     score = {"txt_path": path,
-							 "random": pr, "blind": pb, "interest": pi, "welfare": pw, "exclusion": pe}
-					
+                            "random": pr, "blind": pb, "interest": pi, "welfare": pw, "exclusion": pe}
+                    
                     if num_sents > 0: 
                         sr = extract_sent(text, smod1, sarg1, sTEXT1, num_sents)
                         sb = extract_sent(text, smod2, sarg2, sTEXT2, num_sents)
@@ -139,8 +139,8 @@ class PreRob():
                         score['sentences'] = {"random": sr, "blind": sb, "interest": si, "welfare": sw, "exclusion": se}           
                 else:
                     score = {"txt_path": path,
-							 "random": 999, "blind": 999, "interest": 999, "welfare": 999, "exclusion": 999}         
-                              
+                            "random": 999, "blind": 999, "interest": 999, "welfare": 999, "exclusion": 999}         
+                            
                 output.append(score)
                 
             for i, _ in enumerate(output):
@@ -148,7 +148,7 @@ class PreRob():
                     output[i]['id'] = str(i + 1)
                 else:
                     output[i]['id'] = str(self.ids[i])
-                               
+                            
         return output
 
 
@@ -166,9 +166,9 @@ output_path = args.output
 num_sents = int(args.sent)
 # Ensure the output directory exists
 os.makedirs(os.path.dirname(output_path), exist_ok=True)
-
+print("the application is starting...")
 p_ref = re.compile(r"(.*Reference\s{0,}\n)|(.*References\s{0,}\n)|(.*Reference list\s{0,}\n)|(.*REFERENCE\s{0,}\n)|(.*REFERENCES\s{0,}\n)|(.*REFERENCE LIST\s{0,}\n)", 
-                   flags=re.DOTALL)
+                flags=re.DOTALL)
 
 mod1, arg1, TEXT1 = load_model(arg_path='pth/awr_13.json', pth_path='pth/awr_13.pth.tar', fld_path='pth/awr_13.Field')
 mod2, arg2, TEXT2 = load_model(arg_path='pth/awb_32.json', pth_path='pth/awb_32.pth.tar', fld_path='pth/awb_32.Field')
@@ -183,7 +183,7 @@ if num_sents:
     smod4, sarg4, sTEXT4 = load_model(arg_path='pth/hw_17.json', pth_path='pth/hw_17.pth.tar', fld_path='pth/hw_17.Field')
     smod5, sarg5, sTEXT5 = load_model(arg_path='pth/he_26.json', pth_path='pth/he_26.pth.tar', fld_path='pth/he_26.Field')
     
-      
+    
 if txt_info and txt_info.endswith(".csv") == True:
     rober = PreRob(txt_info)
     rober.get_txt_path() 
@@ -200,5 +200,5 @@ if txt_info and txt_info.endswith(".csv") == True:
 else:
     print("The input file is not csv")
     
-                  
+                
 
