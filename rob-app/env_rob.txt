@@ -1,0 +1,19 @@
+name: rob
+channels:
+  - pytorch
+  - conda-forge
+  - defaults
+dependencies:
+  - dill=0.3.2=pyh9f0ad1d_0
+  - python=3.7
+  - pytorch=1.5.1
+  - flask
+  - flask-restful
+  - spacy
+  - transformers=3.0.2
+  - pandas
+  - pip
+  - torchtext=0.6.0=py_1
+  - pip:
+      - sentence-transformers==0.3.6
+      - debugpy

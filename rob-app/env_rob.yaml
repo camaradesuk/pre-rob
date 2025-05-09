@@ -2,18 +2,20 @@ name: rob
 channels:
   - pytorch
   - conda-forge
+  - nvidia # For CUDA toolkit if needed
   - defaults
 dependencies:
-  - dill=0.3.2=pyh9f0ad1d_0
-  - python=3.7
-  - pytorch=1.5.1
+  - dill>=0.3.4 # Use a recent version
+  - python=3.9
+  - pytorch=2.6.0 
+  - pytorch-cuda=12.1
   - flask
   - flask-restful
+  - sentence-transformers>=2.2.0 # Use a recent version
   - spacy
-  - transformers=3.0.2
+  - transformers>=4.30 # Use a recent version
   - pandas
   - pip
-  - torchtext=0.6.0=py_1
+  - torchtext>=0.18.0 # Use a recent version
   - pip:
-      - sentence-transformers==0.3.6
       - debugpy

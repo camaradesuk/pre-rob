@@ -7,7 +7,7 @@ echo "Setting conda environment..."
 cd /pre-rob/rob-app
 
 # Create the conda environment and log errors
-conda env create --file env_rob.yaml || {
+conda env create --file environment.yml || {
   echo "Failed to create conda environment"
   exit 1
 }

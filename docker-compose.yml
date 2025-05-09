@@ -3,6 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      target: base
     container_name: rob-app-container
     volumes:
       - ./:/pre-rob
@@ -11,10 +12,10 @@ services:
       - ./rob-app/output:/output
     working_dir: /pre-rob/rob-app
     ports:
-      - "5678:5678"  # Debugging port
+      - "5679:5678"  # Debugging port
     environment:
       LD_LIBRARY_PATH: "/usr/lib/wsl/lib:${LD_LIBRARY_PATH:-}"
     gpus: all
     stdin_open: true
     tty: true
-    entrypoint: ["/bin/bash", "-c", "exec python  -m debugpy --listen 0.0.0.0:5678 --wait-for-client rob.py -p /input/input.csv -o /output/output.csv"]
+    entrypoint: ["/bin/bash", "-c", "exec python  -m debugpy --listen 0.0.0.0:5678 --wait-for-client rob.py -i /input/input.csv -o /output/output.csv"]

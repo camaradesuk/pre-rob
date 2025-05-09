@@ -1,10 +1,9 @@
 # Base image
-FROM pytorch/pytorch:2.6.0-cuda12.6-cudnn9-runtime as base
+FROM pytorch/pytorch:2.6.0-cuda12.6-cudnn9-runtime
 
 
-# Copy dependency files and setup script
+# Copy project files
 COPY rob-app/environment.yml /pre-rob/rob-app/environment.yml
-COPY rob-app/setup.sh /pre-rob/rob-app/setup.sh
 EXPOSE 5678
 
 # Set working directory
@@ -26,16 +25,14 @@ RUN mkdir -p /input /output
 # Activate the environment
 RUN /bin/bash -c "source /opt/conda/etc/profile.d/conda.sh && conda activate rob"
 
-FROM base AS final
 
-COPY . /pre-rob
+# COPY . /pre-rob
+# # Install gdown
+# RUN pip install gdown
 
-# Install gdown
-RUN pip install gdown
-
-# Download pre-trained weights
-RUN mkdir -p pth && \
-    gdown "https://drive.google.com/uc?id=18YixZQ4otcZWdAMavy5OviR0579kWrCm" -O pth/dsc_w0.pth.tar
+# # Download pre-trained weights
+# RUN mkdir -p pth && \
+#     gdown "https://drive.google.com/uc?id=18YixZQ4otcZWdAMavy5OviR0579kWrCm" -O pth/dsc_w0.pth.tar
 
 
 # Set entrypoint to run the app
