@@ -115,56 +115,51 @@ class PreRob():
 
 
     def process_text(self, text: str, p_ref: re.Pattern) -> str:
-        """Cleans raw text extracted from files."""
-        # Remove texts before the first occurrence of 'Introduction' (case-insensitive)
-        # Using re.IGNORECASE and making it non-greedy
+        """
+        Cleans raw text extracted from files.
+        MODIFIED TO EXACTLY MIMIC THE ORIGINAL SCRIPT'S process_text BEHAVIOR.
+        """
+        # These are the effective operations from the original script, in order:
+
+        # 1. Remove texts before the first occurence of 'Introduction' or 'INTRODUCTION'
         text = re.sub(r".*?(Introduction|INTRODUCTION)\s{0,}\n{1,}", " ", text, count=1, flags=re.DOTALL)
-        # Remove reference section (using pre-compiled pattern)
+
+        # 2. Original's reference handling (uses the p_ref passed in)
+        #    This replicates the original's behavior of keeping text UP TO AND INCLUDING
+        #    the matched reference header, due to `s[0]` and the `(.*...` in p_ref.
         s = p_ref.search(text)
         if s:
-            # Keep text *before* the reference marker
-            match_start = s.start() # Get the start index of the overall match
-            text = text[:match_start]
+            text = s[0]
 
-        # Remove citations like [1], [1, 2], [1-3], etc. (more robust pattern)
-        text = re.sub(r"\s?\[[\d,\s\-]+\]", "", text)
-        # Remove citations like (Author, Year) or (Author et al., Year) - basic patterns
-        text = re.sub(r"\s?\([A-Za-z\s]+\,\s\d{4}\)", "", text)
-        text = re.sub(r"\s?\([A-Za-z\s]+et al\.\,\s\d{4}\)", "", text)
+        # 3. Remove citations (original's specific regex)
+        #    This was responsible for removing "[1214]" in the original example output.
+        text = re.sub(r"\s+[\[][^a-zA-Z]+[\]]", "", text)
 
-        # Remove web links
-        text = re.sub(r"https?://\S+", " ", text)
-        # Remove email addresses
-        text = re.sub(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b", " ", text)
+        # 4. Remove links (original's typo'd regex: ":/\/")
+        text = re.sub(r"https?:/\/\S+", " ", text)
 
-        # Remove lines containing only digits or punctuation/whitespace
-        text = re.sub(r"^\s*[\d\W]+\s*$", "", text, flags=re.MULTILINE)
-        # Remove empty lines resulting from previous steps
-        text = re.sub(r"^\s*$", "", text, flags=re.MULTILINE)
-        # Consolidate multiple newlines into one (optional, depends on desired format)
-        # text = re.sub(r"\n{2,}", "\n", text)
+        # 5. Remove emtpy lines (original's regex, replaces multi-empty-lines with a single space)
+        text = re.sub(r"^(?:[\t ]*(?:\r?\n|\r))+", " ", text, flags=re.MULTILINE)
 
-        # Remove non-ASCII characters
+        # 6. Remove lines with digits/(digits,punctuations,line character) only (original's regex)
+        #    The original script did NOT have flags=re.MULTILINE on this specific call.
+        #    This rule, as it was, did NOT remove "X / Y" page numbers.
+        text = re.sub(r"^\W{0,}\d{1,}\W{0,}$", "", text)
+        # If after testing this still behaves unexpectedly for line beginnings, and you are certain
+        # the original's *intent* was per-line for this rule despite missing the flag,
+        # then you might add `flags=re.MULTILINE`. But for strict replication, omit it if original did.
+
+        # 7. Remove non-ascii characters
         text = text.encode("ascii", errors="ignore").decode()
 
-        # --- START REPLACEMENT for whitespace normalization ---
+        # 8. Strip whitespaces (collapse all \s+ to a single space)
+        text = re.sub(r'\s+', " ", text)
 
-        # # 1. Replace multiple spaces/tabs on the same line with a single space
-        # text = re.sub(r'[ \t]{2,}', ' ', text)
+        # 9. Remove THE whitespace at start of line (original method, one char max)
+        text = re.sub(r'^[\s]', "", text)
 
-        # # 2. Optional: Remove leading/trailing spaces/tabs from each line
-        # #    This prevents lines with only spaces/tabs from becoming empty lines with just '\n' later
-        # text = re.sub(r'^[ \t]+|[ \t]+$', '', text, flags=re.MULTILINE)
-
-        # # 3. Replace two or more consecutive newlines with a single newline
-        # text = re.sub(r'\n{2,}', '\n', text)
-
-        # With this single line from the first function:
-        text = re.sub(r'\s+', ' ', text)
-        # --- END REPLACEMENT ---
-
-        # Strip leading/trailing whitespace (from the entire string, including potential leading/trailing newlines)
-        text = text.strip() # Keep this line        
+        # 10. Remove THE whitespace at end of line (original method, one char max)
+        text = re.sub(r'[\s]$', "", text)
 
         return text
 
@@ -298,7 +293,11 @@ if __name__ == "__main__":
     print(f"Model directory: {model_dir}")
 
     # Define reference pattern (adjust if needed)
-    p_ref = re.compile(r"^(Reference\s*list|References|REFERENCE\s*LIST|REFERENCES)\s*$", flags=re.MULTILINE | re.IGNORECASE)
+    p_ref = re.compile(
+        r"(.*Reference\s{0,}\n)|(.*References\s{0,}\n)|(.*Reference list\s{0,}\n)|"
+        r"(.*REFERENCE\s{0,}\n)|(.*REFERENCES\s{0,}\n)|(.*REFERENCE LIST\s{0,}\n)",
+        flags=re.DOTALL
+    )
 
     # --- Load Models ---
     print("Loading models...")

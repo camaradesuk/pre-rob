@@ -1,27 +1,21 @@
-#!/bin/bash
-
+#!/usr/bin/env bash
 set -e
-echo "Setting conda environment..."
 
-# Navigate to the correct directory
+echo "Setting conda environment…"
 cd /pre-rob/rob-app
+conda env create --file environment.yml
 
-# Create the conda environment and log errors
-conda env create --file environment.yml || {
-  echo "Failed to create conda environment"
-  exit 1
-}
-
-# Activate the environment
-echo "Activating conda environment..."
 source /opt/conda/etc/profile.d/conda.sh
-conda activate rob || {
-  echo "Failed to activate conda environment"
-  exit 1
-}
+conda activate rob
 
-# Install SpaCy model
-echo "Downloading spacy module..."
+# (Optional) GPU enable spaCy – remove if you stay CPU‑only
+# python - <<'PY'
+# import spacy, sys
+# spacy.require_gpu()
+# print("spaCy GPU availability:", spacy.prefer_gpu())
+# PY
+
+# download model (2.x still has the CLI)
 python -m spacy download en_core_web_sm
 
 echo "Setup finished successfully."

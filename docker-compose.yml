@@ -3,7 +3,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-      target: base
+      target: build-env
+      args:
+        DOWNLOAD_WEIGHTS: "false"  
     container_name: rob-app-container
     volumes:
       - ./:/pre-rob
@@ -18,4 +20,9 @@ services:
     gpus: all
     stdin_open: true
     tty: true
-    entrypoint: ["/bin/bash", "-c", "exec python  -m debugpy --listen 0.0.0.0:5678 --wait-for-client rob.py -i /input/input.csv -o /output/output.csv"]
+    entrypoint:
+      - /bin/bash
+      - -c
+      - |
+        python -m debugpy --listen 0.0.0.0:5678 --wait-for-client \
+               rob.py -i /input/input.csv -o /output/output.csv
