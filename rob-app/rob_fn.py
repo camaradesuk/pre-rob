@@ -66,6 +66,29 @@ def load_vocab_info(fld_path):
     try:
         with open(fld_path, "rb") as fin:
             # Attempt to load assuming it's a dictionary or object with needed attributes
+            # ------------------------------------------------------------------
+            # make old pickles work: alias `torchtext.data.field` → legacy Field
+            import sys, types
+            try:
+                # works when torchtext ≤ 0.17.x is installed
+                from torchtext.legacy.data import Field as _LegacyField
+            except ModuleNotFoundError:
+                # torchtext ≥ 0.18 — fabricate a minimal stand‑in
+                class _LegacyField:                                     # noqa: E302
+                    def __init__(self, *_, **__):                       # accept anything
+                        pass
+                    # dill will overwrite these attributes with the pickled values,
+                    # but we need them to exist beforehand
+                    vocab = types.SimpleNamespace(stoi={})
+                    pad_token = "<pad>"
+                    unk_token = "<unk>"
+
+            # register the alias that dill expects
+            _field_mod = types.ModuleType("torchtext.data.field")
+            _field_mod.Field = _LegacyField
+            sys.modules["torchtext.data.field"] = _field_mod
+            # ------------------------------------------------------------------
+
             loaded_obj = dill.load(fin)
 
         if isinstance(loaded_obj, dict) and 'stoi' in loaded_obj and 'pad_token' in loaded_obj and 'unk_token' in loaded_obj:
@@ -107,7 +130,7 @@ def load_model_legacy(arg_path, pth_path, fld_path):
     # This is the critical change. Assumes fld_path contains pickled vocab info.
     try:
         vocab_stoi, pad_idx, unk_idx = load_vocab_info(fld_path)
-        vocab_size = len(vocab_stoi)
+        vocab_size = args['max_vocab_size'] + 2
     except Exception as e:
         print(f"Failed to load vocabulary from {fld_path}. Cannot proceed.")
         raise e
@@ -186,12 +209,54 @@ def load_model_legacy(arg_path, pth_path, fld_path):
     # Load state dict - set strict=False if models might have slightly different architectures
     # (e.g., if vocab size changed, the embedding layer size will differ)
     try:
-         model.load_state_dict(state_dict, strict=False)
-         print(f"Loaded model state_dict from: {Path(pth_path).name}")
-    except RuntimeError as e:
-         print(f"Error loading state_dict into {net_type} model from {pth_path}: {e}")
-         print("Possible issues: Mismatched layer names or sizes. Check model definition and checkpoint.")
-         raise e
+        model.load_state_dict(state_dict, strict=True)
+        print(f"Loaded model state_dict from: {Path(pth_path).name}")
+    except RuntimeError as e:  # Catch RuntimeError
+        # The duplicated 'except' line has been removed.
+        # The following code will now execute as part of this 'except RuntimeError as e:' block.
+        from pprint import pprint
+        
+        # Attempt to extract and print missing/unexpected keys from the error object.
+        # This assumes the error 'e' and its 'e.args' attribute are structured
+        # as expected by PyTorch (>=1.12) for load_state_dict errors with strict=True.
+        # It's good practice to add more robust checks here if PyTorch versions vary.
+        print(f"Encountered RuntimeError during model.load_state_dict. Error arguments: {e.args}") # Logging e.args can be helpful
+        try:
+            if len(e.args) >= 3 and isinstance(e.args[0], str): # Common structure for these errors
+                # e.args[0] is usually the error message string
+                # e.args[1] can be missing_keys (list)
+                # e.args[2] can be unexpected_keys (list)
+                missing_keys = e.args[1] if isinstance(e.args[1], list) else []
+                unexpected_keys = e.args[2] if isinstance(e.args[2], list) else []
+
+                if missing_keys:
+                    print("→ missing keys:"); pprint(missing_keys[:10])
+                if unexpected_keys:
+                    print("→ unexpected keys:"); pprint(unexpected_keys[:10])
+                if not missing_keys and not unexpected_keys:
+                     # This branch indicates the error might be a RuntimeError, but not with the expected missing/unexpected key structure in e.args[1]/[2]
+                     print("→ No missing or unexpected keys directly found in e.args[1] or e.args[2] as lists.")
+            else:
+                # Fallback if e.args structure is not as expected for detailed key extraction
+                print("→ Could not automatically extract detailed missing/unexpected keys from e.args structure.")
+
+        except (IndexError, TypeError) as extraction_error:
+            print(f"→ Error while trying to extract missing/unexpected keys: {extraction_error}")
+            print("→ Ensure PyTorch version is consistent with this error parsing logic.")
+            
+        print(f"Error loading state_dict into {net_type} model from {pth_path}: {e}")
+        print("Possible issues: Mismatched layer names or sizes. Check model definition and checkpoint.")
+        raise e  # Re-raise the exception after logging
+
+    # Explicitly clear CUDA cache if using GPU
+    if device.type == 'cuda':
+        torch.cuda.empty_cache()
+
+    model.to(device)
+    model.eval() # Set model to evaluation mode
+
+    # Return vocab_stoi and unk_idx as well, needed for prediction
+    return model, args, vocab_stoi, pad_idx, unk_idx
 
 
     # Explicitly clear CUDA cache if using GPU
@@ -274,7 +339,7 @@ def load_model_bert(arg_path, pth_path):
     # Initialize Sentence Transformer model (use a current recommended model)
     # 'distilbert-base-nli-stsb-mean-tokens' is older, consider 'all-MiniLM-L6-v2' or others
     try:
-        sent_model_name = 'all-MiniLM-L6-v2' # Example: Replace with desired model
+        sent_model_name = 'distilbert-base-nli-stsb-mean-tokens' # Example: Replace with desired model
         sent_model = SentenceTransformer(sent_model_name, device=device)
         print(f"Loaded SentenceTransformer model: {sent_model_name}")
     except Exception as e:

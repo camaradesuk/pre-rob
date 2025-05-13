@@ -1,21 +1,29 @@
 #!/usr/bin/env bash
 set -e
-
-echo "Setting conda environment…"
 cd /pre-rob/rob-app
-conda env create --file environment.yml
+
+echo "🟡  Creating conda environment…"
+conda env create -f environment.yml
 
 source /opt/conda/etc/profile.d/conda.sh
 conda activate rob
 
-# (Optional) GPU enable spaCy – remove if you stay CPU‑only
-# python - <<'PY'
-# import spacy, sys
-# spacy.require_gpu()
-# print("spaCy GPU availability:", spacy.prefer_gpu())
-# PY
+echo "📦  Installing runtime packages…"
+# 1️⃣ ensure the compatible NumPy version is in place
+pip install --no-cache-dir "numpy==1.24.4"
 
-# download model (2.x still has the CLI)
-python -m spacy download en_core_web_sm
+# 2️⃣ now install everything else
+pip install --no-cache-dir \
+    pandas==1.5.3 \
+    spacy==2.3.9 \
+    torchtext==0.17.2 \
+    "transformers>=4.30,<5" \
+    "sentence-transformers>=2.2.0" \
+    "dill==0.3.8" \
+    "gdown==5.*" \
+    debugpy
 
-echo "Setup finished successfully."
+# fetch the language model (not on PyPI)
+python -m spacy download en_core_web_sm --direct --no-warn
+
+echo "✅  Setup complete."
