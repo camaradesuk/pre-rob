@@ -1,5 +1,5 @@
-id,txt_path,random,blind,interest,welfare,exclusion
-240647,"/input/TXTs/Viviam OS, 2015.txt",0.9999972581863403,0.11045664548873901,0.9999847412109375,0.9816994667053223,0.08517410606145859
-175949,"/input/TXTs/Lei Y, 2015.txt",2.608020258776378e-05,6.656850928266067e-07,1.0,0.18268994987010956,0.026635553687810898
-174906,"/input/TXTs/Magdy MA, 2015.txt",6.743380799889565e-05,1.3008101973355224e-07,0.9997153878211975,0.9793606400489807,0.02945762872695923
-62522,"/input/TXTs/Minwoo A, 2015.txt",0.999997615814209,1.4352757716551423e-05,0.4943656325340271,0.9921030402183533,0.02127477526664734
+id,txt_path,random,blind,interest,welfare,exclusion,sentences
+240647,"/input/TXTs/Viviam OS, 2015.txt",0.9999972581863403,0.11004841327667236,0.9996631145477295,0.5784704685211182,0.07223661988973618,"{'random': ['Model not loaded'], 'blind': ['Model not loaded'], 'interest': ['Model not loaded'], 'welfare': ['Model not loaded'], 'exclusion': ['Model not loaded']}"
+175949,"/input/TXTs/Lei Y, 2015.txt",3.4968888940056786e-05,1.308318815063103e-06,1.0,0.011794710531830788,0.026576217263936996,"{'random': ['Model not loaded'], 'blind': ['Model not loaded'], 'interest': ['Model not loaded'], 'welfare': ['Model not loaded'], 'exclusion': ['Model not loaded']}"
+174906,"/input/TXTs/Magdy MA, 2015.txt",0.00026804651133716106,1.4410071003112535e-07,0.9986581802368164,0.9854978322982788,0.026678338646888733,"{'random': ['Model not loaded'], 'blind': ['Model not loaded'], 'interest': ['Model not loaded'], 'welfare': ['Model not loaded'], 'exclusion': ['Model not loaded']}"
+62522,"/input/TXTs/Minwoo A, 2015.txt",0.999997615814209,1.4353607184602879e-05,0.49435314536094666,0.9915880560874939,0.021275734528899193,"{'random': ['Model not loaded'], 'blind': ['Model not loaded'], 'interest': ['Model not loaded'], 'welfare': ['Model not loaded'], 'exclusion': ['Model not loaded']}"

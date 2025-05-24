@@ -21,6 +21,9 @@ echo "📦  Installing runtime packages specified in setup.sh..."
 # If not, it would be:
 # pip install --no-cache-dir "numpy==1.24.4" 
 
+# echo "📦  Installing torchtext stub (no extra deps)…"
+# pip install --no-cache-dir --no-deps torchtext==0.17.2
+
 # 2️⃣ Install other pip packages (many are already from environment.yml's pip section)
 # The environment.yml should be the primary source for these.
 # This pip install section in setup.sh can be for packages not suitable for environment.yml

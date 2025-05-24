@@ -8,9 +8,7 @@ dependencies:
   - pandas=1.5.3
   - pip
   - pip:
-      - torchtext==0.17.2      
       - spacy==2.3.9
-      - transformers>=4.30,<5
-      - sentence-transformers>=2.2.0
+      - sentence-transformers>=2.2.0 
       - dill==0.3.8
       - debugpy
