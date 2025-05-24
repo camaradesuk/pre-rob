@@ -51,7 +51,6 @@ class _DummyFieldBase:
         self.postprocessing = kwargs.get('postprocessing', None)
         self.lower = kwargs.get('lower', False)
         self.tokenizer_args = kwargs.get('tokenizer_args', {}) # Store tokenizer_args
-        # self.tokenize = kwargs.get('tokenize', 'spacy') # Default from original torchtext
         self.tokenize = kwargs.get('tokenize', lambda x: x.split()) # Simplified default
         self.include_lengths = kwargs.get('include_lengths', False)
         self.batch_first = kwargs.get('batch_first', False)
@@ -61,83 +60,57 @@ class _DummyFieldBase:
         self.is_target = kwargs.get('is_target', False)
         self.vocab_cls = _DummyVocab
         self.vocab = self.vocab_cls(
-            stoi=kwargs.get('vocab_stoi', {"<unk>": 0, "<pad>": 1, "dummy_for_nested": 2}), # Ensure some content
+            stoi=kwargs.get('vocab_stoi', {"<unk>": 0, "<pad>": 1, "dummy_for_nested": 2}),
             pad_token=self.pad_token,
             unk_token=self.unk_token
         )
-        # Capture any other attributes dill might try to set
         for k, v in kwargs.items():
             if not hasattr(self, k):
                 setattr(self, k, v)
 
 class _DummyField(_DummyFieldBase):
-    """
-    A dummy class to stand in for torchtext.data.Field.
-    It needs to have attributes that the unpickled object expects,
-    especially 'vocab' with an 'stoi' map.
-    """
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        # This is a simple Field, vocab is directly on it.
 
 class _DummyNestedField(_DummyFieldBase):
-    """
-    A dummy class to stand in for torchtext.data.NestedField.
-    A NestedField typically wraps another Field (nesting_field)
-    and tokenizes text into a nested list structure.
-    The vocabulary is often associated with the nesting_field.
-    """
-    def __init__(self, nesting_field_arg, **kwargs): # Renamed to avoid clash if 'nesting_field' is in kwargs
+    def __init__(self, nesting_field_arg, **kwargs):
         super().__init__(**kwargs)
-        self.nesting_field = nesting_field_arg # This is the first arg to NestedField constructor
-
-        # If the nesting_field itself has vocab, that's the one we usually care about for HAN.
+        self.nesting_field = nesting_field_arg
         if hasattr(self.nesting_field, 'vocab') and hasattr(self.nesting_field.vocab, 'stoi'):
             self.vocab = self.nesting_field.vocab
             self.pad_token = getattr(self.nesting_field, 'pad_token', self.pad_token)
             self.unk_token = getattr(self.nesting_field, 'unk_token', self.unk_token)
-        # Else, the vocab initialized in _DummyFieldBase is used.
+        self.fixup_attrs = True
 
-        self.fixup_attrs = True # A flag sometimes used in torchtext legacy
-
-def _split_tokenizer(x): # As in original user code
+def _split_tokenizer(x):
     return x.split()
 
-# Create the fake module structure for dill to find these classes
 torchtext_mod = types.ModuleType("torchtext")
 data_mod = types.ModuleType("torchtext.data")
-field_mod = types.ModuleType("torchtext.data.field") # dill looks for torchtext.data.field.ClassName
+field_mod = types.ModuleType("torchtext.data.field")
 vocab_mod = types.ModuleType("torchtext.vocab")
 utils_mod = types.ModuleType("torchtext.data.utils")
 
-# Assign the dummy classes to the shimmed field_mod
 field_mod.Field = _DummyField
-field_mod.NestedField = _DummyNestedField # Make NestedField available here
-
-# Assign other components
+field_mod.NestedField = _DummyNestedField
 vocab_mod.Vocab = _DummyVocab
-utils_mod._split_tokenizer = _split_tokenizer # If pickled objects refer to this
+utils_mod._split_tokenizer = _split_tokenizer
 
-# Link modules
 data_mod.field = field_mod
 data_mod.utils = utils_mod
 torchtext_mod.data = data_mod
 torchtext_mod.vocab = vocab_mod
 
-# Update sys.modules BEFORE dill.load is called anywhere
 sys.modules["torchtext"] = torchtext_mod
 sys.modules["torchtext.data"] = data_mod
-sys.modules["torchtext.data.field"] = field_mod # Critical for dill
+sys.modules["torchtext.data.field"] = field_mod
 sys.modules["torchtext.vocab"] = vocab_mod
 sys.modules["torchtext.data.utils"] = utils_mod
 # --- End Shim ---
 
-
-# --- Hugging Face Offline Configuration ---
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
 os.environ["HF_DATASETS_OFFLINE"] = "1"
 
-# --- Load spaCy model ---
 try:
     nlp = spacy.load("en_core_web_sm")
     print("Successfully loaded spaCy model 'en_core_web_sm'.")
@@ -148,33 +121,29 @@ except OSError as e:
 
 from transformers import AutoTokenizer, DistilBertModel, AutoConfig, DistilBertTokenizer
 from sentence_transformers import SentenceTransformer, util
-# Assuming model.py is in the same directory or PYTHONPATH
 from model import ConvNet, AttnNet, HAN, DistilClsConv
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 if device.type == "cuda":
-    torch.backends.cudnn.deterministic = True # For reproducibility
+    torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
-    # torch.manual_seed(0) # Consider seeding if strict reproducibility is needed across runs
 
 print(f"Using device: {device}")
 
 def ensure_model_on_available_device(model: torch.nn.Module) -> torch.nn.Module:
-    """Moves model to CUDA if available, otherwise CPU. Sets to eval mode."""
     target_device = 'cuda' if torch.cuda.is_available() else 'cpu'
     try:
         model = model.to(target_device)
-        # Minimal check to see if CUDA ops work if target is CUDA
         if target_device == 'cuda':
-            _ = next(model.parameters()).to(target_device) # Try moving a parameter
-        print(f"Model successfully moved to {target_device}.")
+            _ = next(model.parameters()).to(target_device)
+        # print(f"Model {type(model).__name__} successfully moved to {target_device}.") # Verbose
     except Exception as e:
         warnings.warn(
-            f"Failed to move model to {target_device} (reason: {e}). Falling back to CPU.",
+            f"Failed to move model {type(model).__name__} to {target_device} (reason: {e}). Falling back to CPU.",
             RuntimeWarning,
         )
         model = model.to('cpu')
-        print("Model moved to CPU as fallback.")
+        # print(f"Model {type(model).__name__} moved to CPU as fallback.") # Verbose
     model.eval()
     return model
 
@@ -193,27 +162,20 @@ HF_HOME_PATH = Path(os.environ.get('HF_HOME', HF_HOME_DEFAULT))
 TRANSFORMERS_CACHE_PATH = Path(os.environ.get('TRANSFORMERS_CACHE', HF_HOME_PATH / "hub"))
 SENTENCE_TRANSFORMERS_HOME_PATH = Path(os.environ.get('SENTENCE_TRANSFORMERS_HOME', HF_HOME_PATH / "sentence_transformers"))
 
-print(f"Expecting Hugging Face models (transformers lib) in TRANSFORMERS_CACHE: {TRANSFORMERS_CACHE_PATH}")
-print(f"Expecting SentenceTransformer models in SENTENCE_TRANSFORMERS_HOME: {SENTENCE_TRANSFORMERS_HOME_PATH}")
+# print(f"Expecting Hugging Face models (transformers lib) in TRANSFORMERS_CACHE: {TRANSFORMERS_CACHE_PATH}") # Verbose
+# print(f"Expecting SentenceTransformer models in SENTENCE_TRANSFORMERS_HOME: {SENTENCE_TRANSFORMERS_HOME_PATH}") # Verbose
 
 def load_vocab_info(fld_path: Path) -> tuple[dict, int, int]:
-    """
-    Loads vocabulary information (stoi, pad_idx, unk_idx) from a pickled .Field file.
-    Handles both simple Field and NestedField objects using the shims.
-    """
     try:
         with open(fld_path, "rb") as fin:
-            # The shims for Field and NestedField should be active here via sys.modules
             loaded_obj = dill.load(fin)
 
         vocab_source_obj = None
         source_type_msg = "Unknown"
 
-        # Check if it's like a NestedField (common for HAN models)
         if hasattr(loaded_obj, 'nesting_field') and hasattr(loaded_obj.nesting_field, 'vocab'):
             vocab_source_obj = loaded_obj.nesting_field
             source_type_msg = f"NestedField (using nesting_field: {type(vocab_source_obj).__name__})"
-        # Check if it's like a simple Field
         elif hasattr(loaded_obj, 'vocab'):
             vocab_source_obj = loaded_obj
             source_type_msg = f"Field (direct: {type(vocab_source_obj).__name__})"
@@ -226,20 +188,11 @@ def load_vocab_info(fld_path: Path) -> tuple[dict, int, int]:
         vocab_stoi = vocab_source_obj.vocab.stoi
         pad_token = getattr(vocab_source_obj, 'pad_token', "<pad>")
         unk_token = getattr(vocab_source_obj, 'unk_token', "<unk>")
+        pad_idx = vocab_stoi.get(pad_token, 1)
+        unk_idx = vocab_stoi.get(unk_token, 0)
 
-        pad_idx = vocab_stoi.get(pad_token)
-        if pad_idx is None: # Fallback if pad_token isn't in stoi (e.g. if stoi is minimal)
-            pad_idx = 1 # Common default
-            warnings.warn(f"Pad token '{pad_token}' not in vocab.stoi for {fld_path.name}. Using default pad_idx={pad_idx}.", UserWarning)
-
-        unk_idx = vocab_stoi.get(unk_token)
-        if unk_idx is None: # Fallback
-            unk_idx = 0 # Common default
-            warnings.warn(f"Unk token '{unk_token}' not in vocab.stoi for {fld_path.name}. Using default unk_idx={unk_idx}.", UserWarning)
-
-        print(f"Successfully loaded vocab from {fld_path.name} (detected as {source_type_msg}). Vocab size: {len(vocab_stoi)}")
+        # print(f"Successfully loaded vocab from {fld_path.name} (detected as {source_type_msg}). Vocab size: {len(vocab_stoi)}") # Verbose
         return vocab_stoi, pad_idx, unk_idx
-
     except FileNotFoundError:
         print(f"Error: Vocab field file not found at {fld_path}")
         raise
@@ -247,22 +200,16 @@ def load_vocab_info(fld_path: Path) -> tuple[dict, int, int]:
         print(f"Error loading or processing vocab file {fld_path}: {e}")
         raise
 
-
 def load_model_legacy(arg_path: Path, pth_path: Path, fld_path: Path):
-    """Loads legacy models (ConvNet, AttnNet, HAN)."""
     with open(arg_path) as f:
         args = json.load(f)['args']
 
     vocab_stoi, pad_idx, unk_idx = load_vocab_info(fld_path)
     vocab_size = len(vocab_stoi)
-    # Ensure vocab_size for embedding layer is sufficient, matching original logic
     if 'max_vocab_size' in args and (args['max_vocab_size'] + 2) > vocab_size:
          actual_vocab_size_for_model = args['max_vocab_size'] + 2
-         # print(f"Using max_vocab_size from args: {actual_vocab_size_for_model} for {Path(arg_path).name}")
     else:
          actual_vocab_size_for_model = vocab_size
-         # print(f"Using actual vocab_size: {actual_vocab_size_for_model} for {Path(arg_path).name}")
-
 
     net_type = args.get('net_type', 'unknown')
     model: torch.nn.Module
@@ -276,23 +223,28 @@ def load_model_legacy(arg_path: Path, pth_path: Path, fld_path: Path):
                         rnn_num_layers=args['rnn_num_layers'], output_dim=2, bidirection=args['bidirection'],
                         rnn_cell_type=args['rnn_cell_type'], dropout=args['dropout'], pad_idx=pad_idx,
                         embed_trainable=args['embed_trainable'], batch_norm=args['batch_norm'],
-                        output_attn=args.get('output_attn', False)) # HAN model needs output_attn=True
+                        output_attn=args.get('output_attn', False))
     elif net_type == 'han':
+        current_output_attn_setting = args.get('output_attn', True)
+        # Debug print for HAN sentence models to check their 'output_attn' configuration
+        fn_lower = arg_path.name.lower()
+        if fn_lower.startswith(('hr_', 'hb_', 'hi_', 'hw_', 'he_')):
+            print(f"DEBUG_HAN_LOAD: For HAN sentence model config '{arg_path.name}', 'output_attn' resolved to: {current_output_attn_setting} (from JSON args: {args.get('output_attn')}, default if key missing: True)")
+
         model = HAN(vocab_size=actual_vocab_size_for_model, embedding_dim=args['embed_dim'], word_hidden_dim=args['word_hidden_dim'],
                     word_num_layers=args['word_num_layers'], pad_idx=pad_idx, embed_trainable=args['embed_trainable'],
                     batch_norm=args['batch_norm'], sent_hidden_dim=args['sent_hidden_dim'],
                     sent_num_layers=args['sent_num_layers'], output_dim=2,
-                    output_attn=args.get('output_attn', True)) # HAN expects to output attention
+                    output_attn=current_output_attn_setting)
     else:
         raise ValueError(f"Unsupported net_type '{net_type}' in args file {arg_path}")
 
     try:
-        # Try loading with weights_only=False first, as these are pickled modules not just state_dicts
-        checkpoint = torch.load(pth_path, map_location="cpu") # Load to CPU first
+        checkpoint = torch.load(pth_path, map_location="cpu")
     except FileNotFoundError:
         print(f"Error: Model checkpoint file not found at {pth_path}")
         raise
-    except Exception as e: # Catch other torch.load errors
+    except Exception as e:
         print(f"Error loading checkpoint {pth_path}: {e}. Trying with weights_only=True as fallback.")
         try:
             checkpoint = torch.load(pth_path, map_location="cpu", weights_only=True)
@@ -300,23 +252,22 @@ def load_model_legacy(arg_path: Path, pth_path: Path, fld_path: Path):
             print(f"Fallback with weights_only=True also failed for {pth_path}: {e_fallback}")
             raise e_fallback
 
-
     state_dict = checkpoint.get('state_dict', checkpoint)
     if 'state_dict' not in checkpoint and not isinstance(checkpoint, dict):
          warnings.warn(f"Checkpoint {pth_path.name} is not a dict and has no 'state_dict' key. Assuming it IS the state_dict.", UserWarning)
-         state_dict = checkpoint # If the whole file is the state_dict
+         state_dict = checkpoint
     elif 'state_dict' not in checkpoint and isinstance(checkpoint, dict):
          warnings.warn(f"Checkpoint {pth_path.name} is a dict but has no 'state_dict' key. Assuming the dict itself is the state_dict.", UserWarning)
-         state_dict = checkpoint # If the dict is the state_dict
+         state_dict = checkpoint
 
     try:
         model.load_state_dict(state_dict, strict=True)
-        print(f"Loaded model state_dict from: {pth_path.name} for {net_type} model.")
+        # print(f"Loaded model state_dict from: {pth_path.name} for {net_type} model.") # Verbose
     except RuntimeError as e:
         print(f"Error loading state_dict into {net_type} model from {pth_path.name} (strict=True): {e}. Trying strict=False.")
         try:
             model.load_state_dict(state_dict, strict=False)
-            print(f"Successfully loaded state_dict with strict=False for {pth_path.name}.")
+            # print(f"Successfully loaded state_dict with strict=False for {pth_path.name}.") # Verbose
         except RuntimeError as e_false:
             print(f"Error loading state_dict into {net_type} model from {pth_path.name} (strict=False): {e_false}")
             raise e_false
@@ -324,9 +275,7 @@ def load_model_legacy(arg_path: Path, pth_path: Path, fld_path: Path):
     model = ensure_model_on_available_device(model)
     return model, args, vocab_stoi, pad_idx, unk_idx
 
-
 def load_model_bert(arg_path: Path, pth_path: Path):
-    """Loads BERT-based DistilClsConv model."""
     with open(arg_path) as f:
         args = json.load(f)['args']
 
@@ -340,231 +289,167 @@ def load_model_bert(arg_path: Path, pth_path: Path):
     distilbert_model_name_or_path = 'distilbert-base-uncased'
     try:
         config = AutoConfig.from_pretrained(
-            distilbert_model_name_or_path,
-            num_labels=2, # Assuming binary classification
-            return_dict=True,
-            cache_dir=str(TRANSFORMERS_CACHE_PATH),
-            local_files_only=True # Enforce offline usage
+            distilbert_model_name_or_path, num_labels=2, return_dict=True,
+            cache_dir=str(TRANSFORMERS_CACHE_PATH), local_files_only=True
         )
-        # Initialize custom model with this config
         model = DistilClsConv(config)
-        print(f"Initialized DistilClsConv architecture using config from '{distilbert_model_name_or_path}' (cache: {TRANSFORMERS_CACHE_PATH}).")
+        # print(f"Initialized DistilClsConv architecture using config from '{distilbert_model_name_or_path}'.") # Verbose
 
-        # Load pre-trained weights for the DistilBertModel part from Hugging Face cache
-        # This step ensures the base DistilBERT weights are loaded before applying fine-tuned weights.
         distilbert_base_model = DistilBertModel.from_pretrained(
-            distilbert_model_name_or_path,
-            config=config, # Pass the same config
-            cache_dir=str(TRANSFORMERS_CACHE_PATH),
-            local_files_only=True
+            distilbert_model_name_or_path, config=config,
+            cache_dir=str(TRANSFORMERS_CACHE_PATH), local_files_only=True
         )
         model.distilbert.load_state_dict(distilbert_base_model.state_dict())
-        print(f"Loaded pre-trained weights for 'distilbert' part of DistilClsConv from cache.")
-        del distilbert_base_model # Free memory
+        # print(f"Loaded pre-trained weights for 'distilbert' part of DistilClsConv.") # Verbose
+        del distilbert_base_model
 
-        # Load fine-tuned checkpoint for the whole DistilClsConv model
-        checkpoint = torch.load(pth_path, map_location="cpu") # Load to CPU first
-        print(f"Loaded fine-tuned model state_dict from: {pth_path.name}")
-
+        checkpoint = torch.load(pth_path, map_location="cpu")
+        # print(f"Loaded fine-tuned model state_dict from: {pth_path.name}") # Verbose
     except Exception as e:
-        print(f"Error during DistilClsConv initialization or loading base DistilBertModel weights: {e}")
-        print(f"Checked TRANSFORMERS_CACHE_PATH: {TRANSFORMERS_CACHE_PATH}")
+        print(f"Error during DistilClsConv init or loading base weights: {e}")
         raise
 
-    state_dict = checkpoint.get('state_dict', checkpoint) # Handle checkpoints that might be raw state_dicts
+    state_dict = checkpoint.get('state_dict', checkpoint)
     if 'state_dict' not in checkpoint and not isinstance(checkpoint, dict) :
         warnings.warn(f"Checkpoint {pth_path.name} is not a dict and has no 'state_dict' key. Assuming it IS the state_dict.", UserWarning)
         state_dict = checkpoint
     elif 'state_dict' not in checkpoint and isinstance(checkpoint, dict):
         warnings.warn(f"Checkpoint {pth_path.name} is a dict but has no 'state_dict' key. Assuming the dict itself is the state_dict.", UserWarning)
         state_dict = checkpoint
-
-
-    # Load the state_dict into the DistilClsConv model
-    # Using strict=False because the checkpoint might only contain weights for parts of the model
-    # (e.g., if only the classifier head was fine-tuned on top of pre-trained DistilBERT)
-    # Or, if the checkpoint is from the original training, it should match.
+        
     missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
     if missing_keys:
-        print(f"Warning: Missing keys when loading fine-tuned state_dict for {pth_path.name}: {missing_keys}")
+        print(f"Warning: Missing keys loading fine-tuned state_dict for {pth_path.name}: {missing_keys}")
     if unexpected_keys:
-        print(f"Warning: Unexpected keys when loading fine-tuned state_dict for {pth_path.name}: {unexpected_keys}")
-    print(f"Fine-tuned state_dict loaded into DistilClsConv from {pth_path.name}.")
-
+        print(f"Warning: Unexpected keys loading fine-tuned state_dict for {pth_path.name}: {unexpected_keys}")
+    # print(f"Fine-tuned state_dict loaded into DistilClsConv from {pth_path.name}.") # Verbose
 
     tokenizer = DistilBertTokenizer.from_pretrained(
-        distilbert_model_name_or_path,
-        use_fast=True, # Prefer fast tokenizer
-        cache_dir=str(TRANSFORMERS_CACHE_PATH),
-        local_files_only=True
+        distilbert_model_name_or_path, use_fast=True,
+        cache_dir=str(TRANSFORMERS_CACHE_PATH), local_files_only=True
     )
     try:
         sent_model_name = 'distilbert-base-nli-stsb-mean-tokens'
         sent_model = SentenceTransformer(
-            sent_model_name,
-            device='cpu', # Load to CPU first, will be moved by ensure_model_on_available_device
+            sent_model_name, device='cpu',
             cache_folder=str(SENTENCE_TRANSFORMERS_HOME_PATH)
-            # local_files_only=True # SentenceTransformer doesn't have this arg directly, relies on cache_folder
         )
-        print(f"Loaded SentenceTransformer model: {sent_model_name} (using cache: {SENTENCE_TRANSFORMERS_HOME_PATH})")
+        # print(f"Loaded SentenceTransformer model: {sent_model_name}") # Verbose
     except Exception as e:
         print(f"Error loading SentenceTransformer model {sent_model_name}: {e}")
-        print(f"Checked SENTENCE_TRANSFORMERS_HOME_PATH: {SENTENCE_TRANSFORMERS_HOME_PATH}")
         raise
 
     model = ensure_model_on_available_device(model)
-    sent_model = ensure_model_on_available_device(sent_model) # Also move sentence_model to device
+    sent_model = ensure_model_on_available_device(sent_model)
     return model, tokenizer, sent_model, rob_sent
-
 
 def pred_legacy(doc: str, model: torch.nn.Module, args: dict,
                 vocab_stoi: dict, pad_idx: int, unk_idx: int) -> float:
-    """Prediction function for legacy models."""
-    model.eval() # Ensure model is in evaluation mode
+    model.eval()
     current_device = next(model.parameters()).device
-
     tokens = [tok.text.lower() for tok in nlp.tokenizer(doc)]
     idx = [vocab_stoi.get(t, unk_idx) for t in tokens]
-
-    max_len = args.get('max_token_len', 512) # Default from original, ensure it's in args
+    max_len = args.get('max_token_len', 512)
     if len(idx) < max_len:
         idx += [pad_idx] * (max_len - len(idx))
     elif len(idx) > max_len:
         idx = idx[:max_len]
-
     doc_tensor = torch.tensor(idx, dtype=torch.long).to(current_device)
-    doc_tensor = doc_tensor.unsqueeze(1) # Original shape [seq_len, batch_size=1]
-
+    doc_tensor = doc_tensor.unsqueeze(1)
     with torch.no_grad():
-        probs_output = model(doc_tensor) # Model output depends on its structure
-
-    # Assuming model output is [batch_size, num_classes] or similar for classification
-    # For binary classification, probs_output[0][1] is prob of positive class
+        probs_output = model(doc_tensor)
     if probs_output.ndim == 2 and probs_output.shape[0] == 1 and probs_output.shape[1] >= 2:
-        prob_positive = probs_output.squeeze(0)[1].item() # .item() to get Python float
-    elif probs_output.ndim == 1 and probs_output.shape[0] >=2: # If output was already squeezed
+        prob_positive = probs_output.squeeze(0)[1].item()
+    elif probs_output.ndim == 1 and probs_output.shape[0] >=2:
         prob_positive = probs_output[1].item()
     else:
         warnings.warn(f"Unexpected output shape from legacy model: {probs_output.shape}. Cannot extract positive class probability reliably.", UserWarning)
-        prob_positive = 0.0 # Fallback
-
+        prob_positive = 0.0
     return float(prob_positive)
-
 
 def pred_bert(text: str, model: torch.nn.Module, tokenizer,
               sent_model: SentenceTransformer, rob_sent: str, max_n_sent: int = 30) -> float:
-    """Prediction function for BERT-based DistilClsConv model."""
-    model.eval() # Ensure model is in evaluation mode
+    model.eval()
     current_device = next(model.parameters()).device
-    sent_model.to(current_device) # Ensure sentence_model is on the same device
-
-    # Limit sentence count to prevent OOM, take more initially for better selection
+    sent_model.to(current_device)
     sents_spacy = list(nlp(text).sents)
-    sents = [str(s).strip() for s in sents_spacy if len(str(s).split()) > 3][:max_n_sent * 5] # Increased pool for selection
-
+    sents = [str(s).strip() for s in sents_spacy if len(str(s).split()) > 3][:max_n_sent * 5]
     if not sents:
         warnings.warn("No sentences found after filtering in pred_bert. Returning 0.0.", UserWarning)
         return 0.0
-
     try:
-        # Encode sentences in batches if too many to avoid OOM with SentenceTransformer
-        batch_size_st = 128 # Adjust based on GPU memory
+        batch_size_st = 128
         all_sent_embeds = []
         for i in range(0, len(sents), batch_size_st):
             batch_sents = sents[i:i+batch_size_st]
             batch_embeds = sent_model.encode(batch_sents, convert_to_tensor=True, device=current_device, show_progress_bar=False)
             all_sent_embeds.append(batch_embeds)
         sent_embeds = torch.cat(all_sent_embeds, dim=0)
-
         rob_embed = sent_model.encode([rob_sent], convert_to_tensor=True, device=current_device, show_progress_bar=False)
     except Exception as e:
         print(f"Error during sentence encoding in pred_bert: {e}")
-        return 0.0 # Fallback
-
+        return 0.0
     cos_scores = util.pytorch_cos_sim(sent_embeds, rob_embed)
     top_k = min(max_n_sent, len(sents))
     if top_k == 0:
         warnings.warn("No sentences to select for top_k in pred_bert (top_k is 0). Returning 0.0.", UserWarning)
         return 0.0
-
-    # Ensure cos_scores is 1D before topk if it's not already
     if cos_scores.ndim > 1:
         cos_scores = cos_scores.squeeze()
-        if cos_scores.ndim == 0: # if only one sentence, make it 1D
+        if cos_scores.ndim == 0:
              cos_scores = cos_scores.unsqueeze(0)
-
-
-    if cos_scores.numel() < top_k : # If fewer scores than top_k requested
+    if cos_scores.numel() < top_k :
         warnings.warn(f"Fewer sentences available ({cos_scores.numel()}) than top_k ({top_k}) in pred_bert. Using all available.", UserWarning)
         top_k = cos_scores.numel()
         if top_k == 0: return 0.0
-
-
     top_vals, top_indices = torch.topk(cos_scores, k=top_k, largest=True, sorted=True)
     top_indices_np = top_indices.cpu().numpy()
     sim_sents = [sents[i] for i in top_indices_np]
     sim_text = " ".join(sim_sents)
-
     if not sim_text.strip():
-        warnings.warn("Sim_text (concatenated similar sentences) is empty before tokenization in pred_bert. Returning 0.0.", UserWarning)
+        warnings.warn("Sim_text is empty before tokenization in pred_bert. Returning 0.0.", UserWarning)
         return 0.0
-
     inputs = tokenizer(sim_text, padding=True, truncation=True, return_tensors="pt", max_length=512)
-    inputs = {k: v.to(current_device) for k, v in inputs.items()} # Move inputs to model's device
-
+    inputs = {k: v.to(current_device) for k, v in inputs.items()}
     with torch.no_grad():
-        outputs = model(**inputs) # DistilClsConv returns probabilities directly
-
-    # Assuming outputs is already [batch_size, num_classes] with softmax applied
-    # For binary classification, probs_output[0][1] is prob of positive class
+        outputs = model(**inputs)
     if outputs.ndim == 2 and outputs.shape[0] == 1 and outputs.shape[1] >= 2:
         prob_positive = outputs.squeeze(0)[1].item()
     else:
         warnings.warn(f"Unexpected output shape from BERT model: {outputs.shape}. Cannot extract positive class probability reliably.", UserWarning)
-        prob_positive = 0.0 # Fallback
-
+        prob_positive = 0.0
     return float(prob_positive)
-
 
 def extract_sent_han(doc_text: str, model: torch.nn.Module, args: dict,
                      vocab_stoi: dict, pad_idx: int, unk_idx: int, num_sents: int) -> list[str]:
-    """Extracts relevant sentences using a HAN model and its attention scores."""
     if num_sents <= 0: return []
-    model.eval() # Ensure model is in evaluation mode
+    model.eval()
     current_device = next(model.parameters()).device
-
     doc_spacy = nlp(doc_text)
     sents_text_orig = [sent.text.strip() for sent in doc_spacy.sents]
-
-    sents_tokens_for_model = [] # List of token lists for model input
-    sents_text_for_reconstruction = [] # Corresponding original sentence text
-
-    max_sent_len = args.get('max_sent_len', 100) # Default from original HAN paper often around 50-100
+    sents_tokens_for_model = []
+    sents_text_for_reconstruction = []
+    max_sent_len = args.get('max_sent_len', 100)
 
     for sent_text_item in sents_text_orig:
         tokens = [tok.text.lower() for tok in nlp.tokenizer(sent_text_item)]
-        if len(tokens) < 5 or len(tokens) > max_sent_len + 20 : continue # Filter very short/long sentences (original had >10)
-
-        sents_text_for_reconstruction.append(sent_text_item) # Store original text
-        # Tokenize and numericalize for model
+        if len(tokens) < 5 or len(tokens) > max_sent_len + 20 : continue
+        sents_text_for_reconstruction.append(sent_text_item)
         idx = [vocab_stoi.get(t, unk_idx) for t in tokens]
         if len(idx) < max_sent_len:
             idx += [pad_idx] * (max_sent_len - len(idx))
         else:
-            idx = idx[:max_sent_len] # Truncate
+            idx = idx[:max_sent_len]
         sents_tokens_for_model.append(idx)
 
     if not sents_tokens_for_model:
         warnings.warn("No valid sentences found for HAN attention extraction after filtering.", UserWarning)
-        return []
+        return ["Error: No valid sentences for HAN after filtering."]
 
-    max_doc_len = args.get('max_doc_len', 50) # Max sentences per document for HAN model
-
-    # Prepare batch for HAN model
+    max_doc_len = args.get('max_doc_len', 50)
     actual_sents_indices_for_input = sents_tokens_for_model[:max_doc_len]
     actual_sents_text_for_output = sents_text_for_reconstruction[:max_doc_len]
 
-    # Pad document to max_doc_len if fewer sentences
     if len(actual_sents_indices_for_input) < max_doc_len:
         pad_sentence_tensor_list = [pad_idx] * max_sent_len
         actual_sents_indices_for_input.extend(
@@ -572,20 +457,35 @@ def extract_sent_han(doc_text: str, model: torch.nn.Module, args: dict,
         )
 
     doc_tensor = torch.tensor(actual_sents_indices_for_input, dtype=torch.long).to(current_device)
-    doc_tensor = doc_tensor.unsqueeze(0) # HAN expects [batch_size, num_sents, sent_len]
+    doc_tensor = doc_tensor.unsqueeze(0)
 
     with torch.no_grad():
-        outputs = model(doc_tensor) # HAN model should return (probs, sentence_attention_scores)
+        outputs = model(doc_tensor)
 
     if not (isinstance(outputs, tuple) and len(outputs) == 2 and isinstance(outputs[1], torch.Tensor)):
-        warnings.warn("HAN model did not return expected (probs, attn_score_tensor) tuple "
-                      "or attn_score_tensor is not a tensor. Cannot extract sentences by attention.", RuntimeWarning)
-        return ["Error: HAN model output format unexpected."]
+        model_type_name = type(model).__name__
+        debug_msg_parts = [f"Error: Output format from model '{model_type_name}' unexpected."]
+        debug_msg_parts.append(f"Expected tuple (probs, attn_tensor). Got type: {type(outputs)}.")
+        if isinstance(outputs, tuple):
+            debug_msg_parts.append(f"Tuple length: {len(outputs)} (expected 2).")
+            if len(outputs) > 0 and not isinstance(outputs[0], torch.Tensor): # Check type of first element
+                 debug_msg_parts.append(f"Type of outputs[0]: {type(outputs[0])} (expected Tensor).")
+            if len(outputs) > 1 and not isinstance(outputs[1], torch.Tensor): # Check type of second element
+                 debug_msg_parts.append(f"Type of outputs[1]: {type(outputs[1])} (expected Tensor).")
+        elif isinstance(outputs, torch.Tensor): # If it's a tensor, not a tuple
+            debug_msg_parts.append(f"Output is a Tensor with shape: {outputs.shape}.")
+        else: # Other types
+            debug_msg_parts.append(f"Output value (first 100 chars): {str(outputs)[:100]}.")
 
-    _probs, attn_score_tensor = outputs # Probs are not used here, only sentence attention
-    attn_scores_np = attn_score_tensor.squeeze().cpu().numpy() # Squeeze batch, move to CPU, to numpy
+        if hasattr(model, 'output_attn'): # Check model's own flag
+            debug_msg_parts.append(f"Model's internal 'output_attn' flag: {model.output_attn}.")
+        
+        full_debug_msg = " ".join(debug_msg_parts)
+        warnings.warn(full_debug_msg, RuntimeWarning) # Print to console
+        return [full_debug_msg] # Return detailed message in CSV
 
-    # Align attention scores with the original sentences that were fed to the model
+    _probs, attn_score_tensor = outputs
+    attn_scores_np = attn_score_tensor.squeeze().cpu().numpy()
     num_sents_fed_to_model = len(actual_sents_text_for_output)
     aligned_scores = attn_scores_np[:num_sents_fed_to_model]
 
@@ -594,19 +494,9 @@ def extract_sent_han(doc_text: str, model: torch.nn.Module, args: dict,
                       f"number of sentences fed to model ({num_sents_fed_to_model}). Cannot reliably extract.", RuntimeWarning)
         return ["Error: Attention score mismatch."]
 
-    # Create a DataFrame to sort sentences by attention score
-    df = pd.DataFrame({
-        'sent_text': actual_sents_text_for_output, # Use original sentence text
-        'attn': aligned_scores
-    })
-    df = df.sort_values(by=['attn'], ascending=False) # Sort by attention, highest first
-
-    # Get the text of the top N sentences
+    df = pd.DataFrame({'sent_text': actual_sents_text_for_output, 'attn': aligned_scores})
+    df = df.sort_values(by=['attn'], ascending=False)
     top_sents_text = list(df['sent_text'][:num_sents])
-
-    # Basic cleaning of extracted sentences (already done on original text if needed)
-    # The original code had regex cleaning here, but it's better if sents_text_for_reconstruction is clean
-    # For consistency, apply similar cleaning if desired:
     cleaned_top_sents = []
     for sent in top_sents_text:
         sent = re.sub(r" \.", ".", sent); sent = re.sub(r" \,", ",", sent)
