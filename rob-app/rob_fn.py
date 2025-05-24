@@ -4,6 +4,7 @@
 Function definitions for RoB prediction.
 Updated for Python 3.10, PyTorch 2.x, Transformers 4.x, SentenceTransformers 2.x
 Handles legacy torchtext Field and NestedField objects for model loading.
+Forces output_attn=True for HAN sentence models.
 """
 
 import json
@@ -121,7 +122,7 @@ except OSError as e:
 
 from transformers import AutoTokenizer, DistilBertModel, AutoConfig, DistilBertTokenizer
 from sentence_transformers import SentenceTransformer, util
-from model import ConvNet, AttnNet, HAN, DistilClsConv
+from model import ConvNet, AttnNet, HAN, DistilClsConv # Assuming model.py is in the same directory
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 if device.type == "cuda":
@@ -136,14 +137,12 @@ def ensure_model_on_available_device(model: torch.nn.Module) -> torch.nn.Module:
         model = model.to(target_device)
         if target_device == 'cuda':
             _ = next(model.parameters()).to(target_device)
-        # print(f"Model {type(model).__name__} successfully moved to {target_device}.") # Verbose
     except Exception as e:
         warnings.warn(
             f"Failed to move model {type(model).__name__} to {target_device} (reason: {e}). Falling back to CPU.",
             RuntimeWarning,
         )
         model = model.to('cpu')
-        # print(f"Model {type(model).__name__} moved to CPU as fallback.") # Verbose
     model.eval()
     return model
 
@@ -162,17 +161,13 @@ HF_HOME_PATH = Path(os.environ.get('HF_HOME', HF_HOME_DEFAULT))
 TRANSFORMERS_CACHE_PATH = Path(os.environ.get('TRANSFORMERS_CACHE', HF_HOME_PATH / "hub"))
 SENTENCE_TRANSFORMERS_HOME_PATH = Path(os.environ.get('SENTENCE_TRANSFORMERS_HOME', HF_HOME_PATH / "sentence_transformers"))
 
-# print(f"Expecting Hugging Face models (transformers lib) in TRANSFORMERS_CACHE: {TRANSFORMERS_CACHE_PATH}") # Verbose
-# print(f"Expecting SentenceTransformer models in SENTENCE_TRANSFORMERS_HOME: {SENTENCE_TRANSFORMERS_HOME_PATH}") # Verbose
 
 def load_vocab_info(fld_path: Path) -> tuple[dict, int, int]:
     try:
         with open(fld_path, "rb") as fin:
             loaded_obj = dill.load(fin)
-
         vocab_source_obj = None
         source_type_msg = "Unknown"
-
         if hasattr(loaded_obj, 'nesting_field') and hasattr(loaded_obj.nesting_field, 'vocab'):
             vocab_source_obj = loaded_obj.nesting_field
             source_type_msg = f"NestedField (using nesting_field: {type(vocab_source_obj).__name__})"
@@ -181,17 +176,13 @@ def load_vocab_info(fld_path: Path) -> tuple[dict, int, int]:
             source_type_msg = f"Field (direct: {type(vocab_source_obj).__name__})"
         else:
             raise ValueError(f"Loaded object from {fld_path.name} lacks 'vocab' or 'nesting_field.vocab'. Type: {type(loaded_obj)}")
-
         if not hasattr(vocab_source_obj, 'vocab') or not hasattr(vocab_source_obj.vocab, 'stoi'):
             raise ValueError(f"Vocab source object (from {source_type_msg}) lacks 'vocab.stoi'. Type: {type(vocab_source_obj.vocab)}")
-
         vocab_stoi = vocab_source_obj.vocab.stoi
         pad_token = getattr(vocab_source_obj, 'pad_token', "<pad>")
         unk_token = getattr(vocab_source_obj, 'unk_token', "<unk>")
         pad_idx = vocab_stoi.get(pad_token, 1)
         unk_idx = vocab_stoi.get(unk_token, 0)
-
-        # print(f"Successfully loaded vocab from {fld_path.name} (detected as {source_type_msg}). Vocab size: {len(vocab_stoi)}") # Verbose
         return vocab_stoi, pad_idx, unk_idx
     except FileNotFoundError:
         print(f"Error: Vocab field file not found at {fld_path}")
@@ -202,40 +193,52 @@ def load_vocab_info(fld_path: Path) -> tuple[dict, int, int]:
 
 def load_model_legacy(arg_path: Path, pth_path: Path, fld_path: Path):
     with open(arg_path) as f:
-        args = json.load(f)['args']
+        args_json = json.load(f)['args'] # Renamed to avoid conflict with function args
 
     vocab_stoi, pad_idx, unk_idx = load_vocab_info(fld_path)
     vocab_size = len(vocab_stoi)
-    if 'max_vocab_size' in args and (args['max_vocab_size'] + 2) > vocab_size:
-         actual_vocab_size_for_model = args['max_vocab_size'] + 2
+    if 'max_vocab_size' in args_json and (args_json['max_vocab_size'] + 2) > vocab_size:
+         actual_vocab_size_for_model = args_json['max_vocab_size'] + 2
     else:
          actual_vocab_size_for_model = vocab_size
 
-    net_type = args.get('net_type', 'unknown')
+    net_type = args_json.get('net_type', 'unknown')
     model: torch.nn.Module
-    if net_type == 'cnn':
-        sizes = [int(s) for s in args['filter_sizes'].split(',')]
-        model = ConvNet(vocab_size=actual_vocab_size_for_model, embedding_dim=args['embed_dim'], n_filters=args['num_filters'],
-                        filter_sizes=sizes, output_dim=2, dropout=args['dropout'], pad_idx=pad_idx,
-                        embed_trainable=args['embed_trainable'], batch_norm=args['batch_norm'])
-    elif net_type == 'attn':
-        model = AttnNet(vocab_size=actual_vocab_size_for_model, embedding_dim=args['embed_dim'], rnn_hidden_dim=args['rnn_hidden_dim'],
-                        rnn_num_layers=args['rnn_num_layers'], output_dim=2, bidirection=args['bidirection'],
-                        rnn_cell_type=args['rnn_cell_type'], dropout=args['dropout'], pad_idx=pad_idx,
-                        embed_trainable=args['embed_trainable'], batch_norm=args['batch_norm'],
-                        output_attn=args.get('output_attn', False))
-    elif net_type == 'han':
-        current_output_attn_setting = args.get('output_attn', True)
-        # Debug print for HAN sentence models to check their 'output_attn' configuration
-        fn_lower = arg_path.name.lower()
-        if fn_lower.startswith(('hr_', 'hb_', 'hi_', 'hw_', 'he_')):
-            print(f"DEBUG_HAN_LOAD: For HAN sentence model config '{arg_path.name}', 'output_attn' resolved to: {current_output_attn_setting} (from JSON args: {args.get('output_attn')}, default if key missing: True)")
 
-        model = HAN(vocab_size=actual_vocab_size_for_model, embedding_dim=args['embed_dim'], word_hidden_dim=args['word_hidden_dim'],
-                    word_num_layers=args['word_num_layers'], pad_idx=pad_idx, embed_trainable=args['embed_trainable'],
-                    batch_norm=args['batch_norm'], sent_hidden_dim=args['sent_hidden_dim'],
-                    sent_num_layers=args['sent_num_layers'], output_dim=2,
-                    output_attn=current_output_attn_setting)
+    # Determine the output_attn setting
+    # Default to False for AttnNet, True for HAN (unless overridden by JSON)
+    default_output_attn = True if net_type == 'han' else False
+    current_output_attn_setting = args_json.get('output_attn', default_output_attn)
+
+    # --- Force output_attn to True for sentence extraction HAN models ---
+    fn_lower = arg_path.name.lower()
+    is_sentence_han_model = net_type == 'han' and fn_lower.startswith(('hr_', 'hb_', 'hi_', 'hw_', 'he_'))
+    
+    if is_sentence_han_model:
+        if not current_output_attn_setting: # If JSON had it as False or it defaulted to False (which it wouldn't for HAN by default)
+            print(f"OVERRIDE_HAN_LOAD: For sentence model config '{arg_path.name}', JSON 'output_attn' was {args_json.get('output_attn')}. Forcing to True for sentence extraction.")
+        current_output_attn_setting = True # Force it
+    elif net_type == 'han': # For other HAN models, print the debug info
+         print(f"DEBUG_HAN_LOAD: For HAN (non-sentence) model config '{arg_path.name}', 'output_attn' resolved to: {current_output_attn_setting} (from JSON args: {args_json.get('output_attn')}, default if key missing: True)")
+
+
+    if net_type == 'cnn':
+        sizes = [int(s) for s in args_json['filter_sizes'].split(',')]
+        model = ConvNet(vocab_size=actual_vocab_size_for_model, embedding_dim=args_json['embed_dim'], n_filters=args_json['num_filters'],
+                        filter_sizes=sizes, output_dim=2, dropout=args_json['dropout'], pad_idx=pad_idx,
+                        embed_trainable=args_json['embed_trainable'], batch_norm=args_json['batch_norm'])
+    elif net_type == 'attn':
+        model = AttnNet(vocab_size=actual_vocab_size_for_model, embedding_dim=args_json['embed_dim'], rnn_hidden_dim=args_json['rnn_hidden_dim'],
+                        rnn_num_layers=args_json['rnn_num_layers'], output_dim=2, bidirection=args_json['bidirection'],
+                        rnn_cell_type=args_json['rnn_cell_type'], dropout=args_json['dropout'], pad_idx=pad_idx,
+                        embed_trainable=args_json['embed_trainable'], batch_norm=args_json['batch_norm'],
+                        output_attn=current_output_attn_setting) # Use resolved setting
+    elif net_type == 'han':
+        model = HAN(vocab_size=actual_vocab_size_for_model, embedding_dim=args_json['embed_dim'], word_hidden_dim=args_json['word_hidden_dim'],
+                    word_num_layers=args_json['word_num_layers'], pad_idx=pad_idx, embed_trainable=args_json['embed_trainable'],
+                    batch_norm=args_json['batch_norm'], sent_hidden_dim=args_json['sent_hidden_dim'],
+                    sent_num_layers=args_json['sent_num_layers'], output_dim=2,
+                    output_attn=current_output_attn_setting) # Use resolved (and possibly overridden) setting
     else:
         raise ValueError(f"Unsupported net_type '{net_type}' in args file {arg_path}")
 
@@ -262,30 +265,26 @@ def load_model_legacy(arg_path: Path, pth_path: Path, fld_path: Path):
 
     try:
         model.load_state_dict(state_dict, strict=True)
-        # print(f"Loaded model state_dict from: {pth_path.name} for {net_type} model.") # Verbose
     except RuntimeError as e:
         print(f"Error loading state_dict into {net_type} model from {pth_path.name} (strict=True): {e}. Trying strict=False.")
         try:
             model.load_state_dict(state_dict, strict=False)
-            # print(f"Successfully loaded state_dict with strict=False for {pth_path.name}.") # Verbose
         except RuntimeError as e_false:
             print(f"Error loading state_dict into {net_type} model from {pth_path.name} (strict=False): {e_false}")
             raise e_false
 
     model = ensure_model_on_available_device(model)
-    return model, args, vocab_stoi, pad_idx, unk_idx
+    return model, args_json, vocab_stoi, pad_idx, unk_idx # Return args_json
 
 def load_model_bert(arg_path: Path, pth_path: Path):
     with open(arg_path) as f:
         args = json.load(f)['args']
-
     rob_item = args.get('rob_item')
     rob_sent = args.get('rob_sent')
     if rob_sent is None and rob_item in ROB_ITEM_DESCRIPTIONS:
         rob_sent = ROB_ITEM_DESCRIPTIONS[rob_item]
     elif rob_sent is None:
         raise ValueError(f"RoB item description for '{rob_item}' not found in args or predefined descriptions.")
-
     distilbert_model_name_or_path = 'distilbert-base-uncased'
     try:
         config = AutoConfig.from_pretrained(
@@ -293,22 +292,16 @@ def load_model_bert(arg_path: Path, pth_path: Path):
             cache_dir=str(TRANSFORMERS_CACHE_PATH), local_files_only=True
         )
         model = DistilClsConv(config)
-        # print(f"Initialized DistilClsConv architecture using config from '{distilbert_model_name_or_path}'.") # Verbose
-
         distilbert_base_model = DistilBertModel.from_pretrained(
             distilbert_model_name_or_path, config=config,
             cache_dir=str(TRANSFORMERS_CACHE_PATH), local_files_only=True
         )
         model.distilbert.load_state_dict(distilbert_base_model.state_dict())
-        # print(f"Loaded pre-trained weights for 'distilbert' part of DistilClsConv.") # Verbose
         del distilbert_base_model
-
         checkpoint = torch.load(pth_path, map_location="cpu")
-        # print(f"Loaded fine-tuned model state_dict from: {pth_path.name}") # Verbose
     except Exception as e:
         print(f"Error during DistilClsConv init or loading base weights: {e}")
         raise
-
     state_dict = checkpoint.get('state_dict', checkpoint)
     if 'state_dict' not in checkpoint and not isinstance(checkpoint, dict) :
         warnings.warn(f"Checkpoint {pth_path.name} is not a dict and has no 'state_dict' key. Assuming it IS the state_dict.", UserWarning)
@@ -316,14 +309,11 @@ def load_model_bert(arg_path: Path, pth_path: Path):
     elif 'state_dict' not in checkpoint and isinstance(checkpoint, dict):
         warnings.warn(f"Checkpoint {pth_path.name} is a dict but has no 'state_dict' key. Assuming the dict itself is the state_dict.", UserWarning)
         state_dict = checkpoint
-        
     missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
     if missing_keys:
         print(f"Warning: Missing keys loading fine-tuned state_dict for {pth_path.name}: {missing_keys}")
     if unexpected_keys:
         print(f"Warning: Unexpected keys loading fine-tuned state_dict for {pth_path.name}: {unexpected_keys}")
-    # print(f"Fine-tuned state_dict loaded into DistilClsConv from {pth_path.name}.") # Verbose
-
     tokenizer = DistilBertTokenizer.from_pretrained(
         distilbert_model_name_or_path, use_fast=True,
         cache_dir=str(TRANSFORMERS_CACHE_PATH), local_files_only=True
@@ -334,11 +324,9 @@ def load_model_bert(arg_path: Path, pth_path: Path):
             sent_model_name, device='cpu',
             cache_folder=str(SENTENCE_TRANSFORMERS_HOME_PATH)
         )
-        # print(f"Loaded SentenceTransformer model: {sent_model_name}") # Verbose
     except Exception as e:
         print(f"Error loading SentenceTransformer model {sent_model_name}: {e}")
         raise
-
     model = ensure_model_on_available_device(model)
     sent_model = ensure_model_on_available_device(sent_model)
     return model, tokenizer, sent_model, rob_sent
@@ -360,9 +348,9 @@ def pred_legacy(doc: str, model: torch.nn.Module, args: dict,
         probs_output = model(doc_tensor)
     if probs_output.ndim == 2 and probs_output.shape[0] == 1 and probs_output.shape[1] >= 2:
         prob_positive = probs_output.squeeze(0)[1].item()
-    elif probs_output.ndim == 1 and probs_output.shape[0] >=2:
+    elif probs_output.ndim == 1 and probs_output.shape[0] >=2: # If output was already squeezed (e.g. from AttnNet with output_attn=False)
         prob_positive = probs_output[1].item()
-    else:
+    else: # Fallback for unexpected shapes
         warnings.warn(f"Unexpected output shape from legacy model: {probs_output.shape}. Cannot extract positive class probability reliably.", UserWarning)
         prob_positive = 0.0
     return float(prob_positive)
@@ -468,21 +456,21 @@ def extract_sent_han(doc_text: str, model: torch.nn.Module, args: dict,
         debug_msg_parts.append(f"Expected tuple (probs, attn_tensor). Got type: {type(outputs)}.")
         if isinstance(outputs, tuple):
             debug_msg_parts.append(f"Tuple length: {len(outputs)} (expected 2).")
-            if len(outputs) > 0 and not isinstance(outputs[0], torch.Tensor): # Check type of first element
+            if len(outputs) > 0 and not isinstance(outputs[0], torch.Tensor):
                  debug_msg_parts.append(f"Type of outputs[0]: {type(outputs[0])} (expected Tensor).")
-            if len(outputs) > 1 and not isinstance(outputs[1], torch.Tensor): # Check type of second element
+            if len(outputs) > 1 and not isinstance(outputs[1], torch.Tensor):
                  debug_msg_parts.append(f"Type of outputs[1]: {type(outputs[1])} (expected Tensor).")
-        elif isinstance(outputs, torch.Tensor): # If it's a tensor, not a tuple
+        elif isinstance(outputs, torch.Tensor):
             debug_msg_parts.append(f"Output is a Tensor with shape: {outputs.shape}.")
-        else: # Other types
+        else:
             debug_msg_parts.append(f"Output value (first 100 chars): {str(outputs)[:100]}.")
 
-        if hasattr(model, 'output_attn'): # Check model's own flag
+        if hasattr(model, 'output_attn'):
             debug_msg_parts.append(f"Model's internal 'output_attn' flag: {model.output_attn}.")
         
         full_debug_msg = " ".join(debug_msg_parts)
-        warnings.warn(full_debug_msg, RuntimeWarning) # Print to console
-        return [full_debug_msg] # Return detailed message in CSV
+        warnings.warn(full_debug_msg, RuntimeWarning)
+        return [full_debug_msg]
 
     _probs, attn_score_tensor = outputs
     attn_scores_np = attn_score_tensor.squeeze().cpu().numpy()
