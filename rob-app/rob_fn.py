@@ -21,6 +21,7 @@ import os
 import types
 import sys
 import logging 
+from typing import Any # <<< IMPORT ADDED HERE
 
 # --- Global constants ---
 FILE_PROCESSING_TIMEOUT_SECONDS = 300  # Timeout threshold in seconds (e.g., 5 minutes)
@@ -158,15 +159,6 @@ def ensure_model_on_available_device(model: torch.nn.Module) -> torch.nn.Module:
         model = model.to('cpu')
     model.eval() 
     return model
-
-# --- Constants for RoB Item Descriptions and Cache Paths ---
-# ROB_ITEM_DESCRIPTIONS is defined in rob.py's main section if needed for model loading args.
-# For rob_fn.py, the direct rob_sent string is passed to pred_bert.
-# However, if it were needed here for some reason:
-# ROB_ITEM_DESCRIPTIONS_LEGACY = {
-#     'RandomizationTreatmentControl': 'Animals are randomly allocated to treatment or control groups at the start of the experimental treatment',
-#     # ... other descriptions
-# }
 
 HF_HOME_DEFAULT = Path.home() / ".cache" / "huggingface"
 HF_HOME_PATH = Path(os.environ.get('HF_HOME', HF_HOME_DEFAULT))
@@ -321,17 +313,10 @@ def load_model_bert(arg_path: Path, pth_path: Path):
         args = json.load(f).get('args')
         if not args:
             raise ValueError(f"Could not find 'args' key in JSON file: {arg_path}")
-    rob_item = args.get('rob_item') # This might be used to fetch rob_sent if not directly in args
+    rob_item = args.get('rob_item') 
     rob_sent = args.get('rob_sent') 
-    # In rob.py, ROB_ITEM_DESCRIPTIONS is used to populate rob_sent if it's None.
-    # Here, we assume rob_sent is provided or handled before calling this.
-    # If rob_sent is critical and might be None, add a check.
     if rob_sent is None:
-        # Attempt to use ROB_ITEM_DESCRIPTIONS_LEGACY if defined and rob_item exists
-        # This part depends on how rob_sent is expected to be derived if not in args.
-        # For now, assume rob_sent is correctly passed or derived by the caller.
         logger.warning(f"rob_sent is None for BERT model {arg_path.name}. Ensure it's correctly set by the caller.")
-        # raise ValueError(f"RoB item description (rob_sent) is missing for BERT model {arg_path.name}")
 
     distilbert_model_name_or_path = 'distilbert-base-uncased' 
     logger.debug(f"Using base DistilBert model: {distilbert_model_name_or_path}")
@@ -389,7 +374,7 @@ def load_model_bert(arg_path: Path, pth_path: Path):
 
 def pred_legacy(doc: str, model: torch.nn.Module, args: dict,
                 vocab_stoi: dict, pad_idx: int, unk_idx: int, 
-                nlp_instance: Any) -> float: # Added nlp_instance
+                nlp_instance: Any) -> float: 
     if not doc.strip():
         logger.warning("pred_legacy received empty document. Returning 0.0 probability.")
         return 0.0
@@ -400,7 +385,7 @@ def pred_legacy(doc: str, model: torch.nn.Module, args: dict,
     model.eval() 
     current_device = next(model.parameters()).device 
     try:
-        tokens = [tok.text.lower() for tok in nlp_instance.tokenizer(doc)] # Use passed nlp_instance
+        tokens = [tok.text.lower() for tok in nlp_instance.tokenizer(doc)] 
         idx = [vocab_stoi.get(t, unk_idx) for t in tokens]
         max_len = args.get('max_token_len', 512) 
         if len(idx) == 0: 
@@ -432,7 +417,7 @@ def pred_legacy(doc: str, model: torch.nn.Module, args: dict,
 
 def pred_bert(text: str, model: torch.nn.Module, tokenizer,
               sent_model: SentenceTransformer, rob_sent_desc: str, 
-              nlp_instance: Any, # Added nlp_instance
+              nlp_instance: Any, 
               max_n_sent: int = 30) -> float:
     if not text.strip():
         logger.warning("pred_bert received empty text. Returning 0.0 probability.")
@@ -446,7 +431,7 @@ def pred_bert(text: str, model: torch.nn.Module, tokenizer,
     current_device = next(model.parameters()).device 
     sent_model_device = next(sent_model.parameters()).device 
     try:
-        sents_spacy = list(nlp_instance(text).sents) # Use passed nlp_instance
+        sents_spacy = list(nlp_instance(text).sents) 
         sents = [str(s).strip() for s in sents_spacy if len(str(s).split()) > 3][:max_n_sent * 5] 
         if not sents:
             logger.warning("No sentences found after filtering in pred_bert for text. Returning 0.0.")
@@ -503,7 +488,7 @@ def pred_bert(text: str, model: torch.nn.Module, tokenizer,
 def extract_sent_han(doc_text: str, model: torch.nn.Module, args: dict,
                      vocab_stoi: dict, pad_idx: int, unk_idx: int, 
                      num_sents_to_extract: int, 
-                     nlp_instance: Any) -> list[str]: # Added nlp_instance
+                     nlp_instance: Any) -> list[str]: 
     if num_sents_to_extract <= 0:
         return []
     if not doc_text.strip():
@@ -516,14 +501,14 @@ def extract_sent_han(doc_text: str, model: torch.nn.Module, args: dict,
     model.eval() 
     current_device = next(model.parameters()).device
     try:
-        doc_spacy = nlp_instance(doc_text) # Use passed nlp_instance
+        doc_spacy = nlp_instance(doc_text) 
         sents_text_orig = [sent.text.strip() for sent in doc_spacy.sents]
         sents_tokens_for_model = [] 
         sents_text_for_reconstruction = [] 
         max_sent_len = args.get('max_sent_len', 100) 
         min_sent_len_heuristic = 5 
         for sent_text_item in sents_text_orig:
-            tokens = [tok.text.lower() for tok in nlp_instance.tokenizer(sent_text_item)] # Use passed nlp_instance
+            tokens = [tok.text.lower() for tok in nlp_instance.tokenizer(sent_text_item)] 
             if not (min_sent_len_heuristic <= len(tokens) <= max_sent_len + 20): 
                 continue 
             sents_text_for_reconstruction.append(sent_text_item) 
@@ -550,7 +535,12 @@ def extract_sent_han(doc_text: str, model: torch.nn.Module, args: dict,
         if not (isinstance(outputs, tuple) and len(outputs) == 2 and isinstance(outputs[1], torch.Tensor)):
             model_type_name = type(model).__name__
             err_msg_parts = [f"Error: Output format from HAN model '{model_type_name}' unexpected."]
-            # ... (rest of error message construction as before) ...
+            err_msg_parts.append(f"Expected tuple (probs, attn_tensor). Got type: {type(outputs)}.")
+            if isinstance(outputs, tuple):
+                err_msg_parts.append(f"Tuple length: {len(outputs)} (expected 2).")
+                if len(outputs) > 0 and not isinstance(outputs[0], torch.Tensor): err_msg_parts.append(f"Type of outputs[0]: {type(outputs[0])} (expected Tensor).")
+                if len(outputs) > 1 and not isinstance(outputs[1], torch.Tensor): err_msg_parts.append(f"Type of outputs[1]: {type(outputs[1])} (expected Tensor).")
+            elif isinstance(outputs, torch.Tensor): err_msg_parts.append(f"Output is a Tensor with shape: {outputs.shape}.")
             output_attn_flag = getattr(model, 'output_attn', 'Not Set/Applicable')
             err_msg_parts.append(f"Model's 'output_attn' flag: {output_attn_flag}. Must be True.")
             full_err_msg = " ".join(err_msg_parts)
