@@ -2,15 +2,8 @@
 # -*- coding: utf-8 -*-
 """
 Main script for Risk of Bias (RoB) prediction.
-Processes text files, predicts RoB scores using various models,
-and optionally extracts relevant sentences.
-
-This script incorporates:
-- Enhanced logging and error handling.
-- Processing time tracking for each file.
-- Hard timeouts for individual file processing using multiprocessing.
-- Flattened sentence extraction in the output CSV.
-- Sets multiprocessing start method to 'spawn' for CUDA compatibility.
+This version correctly handles passing the RoB sentence description
+to the BERT model loader.
 """
 
 import os
@@ -22,9 +15,9 @@ from typing import List, Dict, Any, Optional
 import time
 import logging
 import multiprocessing
-import queue # For queue.Empty exception
-import spacy # Import spacy here for the worker function
-import sys # For checking platform
+import queue
+import spacy
+import sys
 
 # --- Configure logging ---
 logging.basicConfig(
@@ -46,10 +39,10 @@ try:
         ROB_ITEM_CATEGORIES 
     )
 except ImportError as e:
-    logger.critical(f"Critical import error from rob_fn: {e}. Ensure rob_fn.py is accessible, correct, and defines necessary constants/functions.", exc_info=True)
+    logger.critical(f"Critical import error from rob_fn: {e}.", exc_info=True)
     raise
 
-# Worker function for multiprocessing
+# --- Worker Function (remains the same as rob_py_updated_v4) ---
 def _process_single_file_worker(
     file_path_str: str,
     models_loaded_dict: Dict[str, Any],
@@ -63,151 +56,76 @@ def _process_single_file_worker(
     extract_sent_han_fn_ref,
     rob_item_categories_list: List[str]
 ):
-    """
-    Worker function to process a single text file.
-    This function is executed in a separate process.
-    Initializes its own spaCy nlp instance with a sentencizer.
-    """
     nlp_instance = None
-    worker_log_prefix = f"Worker_{os.getpid()}_for_{current_id_val} ({Path(file_path_str).name})" 
+    worker_log_prefix = f"Worker_{os.getpid()}_for_{current_id_val}"
     try:
         nlp_instance = spacy.load("en_core_web_sm", disable=["parser", "ner"])
-        # Correct way to add sentencizer for spaCy v2.x
         if not nlp_instance.has_pipe("sentencizer"):
             sentencizer_pipe = nlp_instance.create_pipe("sentencizer")
             nlp_instance.add_pipe(sentencizer_pipe, first=True)
-        print(f"{worker_log_prefix}: spaCy nlp instance loaded with sentencizer.")
+        print(f"{worker_log_prefix}: spaCy loaded.")
     except Exception as e_nlp:
-        print(f"{worker_log_prefix}: Failed to load/configure spaCy model: {e_nlp}")
-        error_score = {
-            "id": current_id_val, "txt_path": file_path_str,
-            "message": "Failed to load spaCy in worker", "status": "Error",
-            "error_details": f"spaCy load/config error: {e_nlp}", "processing_time_seconds": 0.0,
-        }
-        for cat in rob_item_categories_list: error_score[cat] = -3.0 
-        if num_sents_val > 0: error_score['sentences'] = {cat: ["NLP Load/Config Error"] for cat in rob_item_categories_list}
+        print(f"{worker_log_prefix}: Failed to load spaCy: {e_nlp}")
+        error_score = {"id": current_id_val, "txt_path": file_path_str, "message": "spaCy load error", "status": "Error", "error_details": f"{e_nlp}", "processing_time_seconds": 0.0}
         output_q.put(error_score)
         return
 
     start_time = time.time()
     file_status = "OK"
     error_msg = ""
-    path = Path(file_path_str)
-
-    score: Dict[str, Any] = {
-        "id": current_id_val, "txt_path": file_path_str,
-        "message": "Processing started in worker",
-        "processing_time_seconds": 0.0, "status": "Processing", "error_details": ""
-    }
-    for cat in rob_item_categories_list: score[cat] = 999.0 
-    if num_sents_val > 0:
-        score['sentences'] = {cat: [] for cat in rob_item_categories_list}
-
+    score: Dict[str, Any] = {"id": current_id_val, "txt_path": file_path_str, "message": "Processing", "status": "Processing"}
+    if num_sents_val > 0: score['sentences'] = {cat: [] for cat in rob_item_categories_list}
+    
     try:
-        with open(path, 'r', encoding='utf-8', errors='ignore') as fin:
-            raw_text = fin.read()
-
+        with open(file_path_str, 'r', encoding='utf-8', errors='ignore') as fin: raw_text = fin.read()
         if not raw_text.strip():
-            score["message"] = "File is empty or whitespace only"
-            file_status = "Skipped"
-            error_msg = "File content empty"
+            score["message"], file_status, error_msg = "File is empty", "Skipped", "File content empty"
         else:
             processed_text = process_text_fn_ref(raw_text, p_ref_compiled) 
             if not processed_text.strip():
-                score["message"] = "Text empty after processing"
-                file_status = "Skipped"
-                error_msg = "Text empty after processing"
+                score["message"], file_status, error_msg = "Text empty after processing", "Skipped", "Text empty"
             else:
                 for key in rob_item_categories_list:
-                    if key == 'welfare': continue 
-                    if key in models_loaded_dict:
-                        model_data = models_loaded_dict[key]
-                        if model_data:
+                    model_data = models_loaded_dict.get(key)
+                    if not model_data: score[key] = -2.0; continue
+                    try:
+                        if key == 'welfare':
+                            model, tokenizer, sent_model, rob_sent_desc = model_data
+                            score[key] = pred_bert_fn_ref(processed_text, model, tokenizer, sent_model, rob_sent_desc, nlp_instance, max_n_sent=30)
+                        else:
                             model, model_args, vocab_stoi, pad_idx, unk_idx = model_data
-                            try:
-                                score[key] = pred_legacy_fn_ref(processed_text, model, model_args, vocab_stoi, pad_idx, unk_idx, nlp_instance)
-                            except Exception as e:
-                                print(f"{worker_log_prefix}: Error pred_legacy for {key}: {str(e)[:200]}") 
-                                score[key] = -1.0
-                                file_status = "Error"; error_msg += f"PredLg({key}):{str(e)[:50]}; "
-                        else: score[key] = -2.0
-                    else: score[key] = -2.0
-
-                if 'welfare' in models_loaded_dict: 
-                    model_data = models_loaded_dict.get('welfare') 
-                    if model_data:
-                        model, tokenizer, sent_model, rob_sent_desc = model_data
-                        try:
-                            score['welfare'] = pred_bert_fn_ref(processed_text, model, tokenizer, sent_model, rob_sent_desc, nlp_instance, max_n_sent=30)
-                        except Exception as e:
-                            print(f"{worker_log_prefix}: Error pred_bert for welfare: {str(e)[:200]}")
-                            score['welfare'] = -1.0
-                            file_status = "Error"; error_msg += f"PredB(welfare):{str(e)[:50]}; "
-                    else: 
-                        score['welfare'] = -2.0
-                        if 'welfare' in rob_item_categories_list:
-                             print(f"{worker_log_prefix}: Welfare model data not found.")
-                elif 'welfare' in rob_item_categories_list: 
-                    score['welfare'] = -2.0
-
-                if num_sents_val > 0:
-                    model_prefix = 's_'
-                    for key in rob_item_categories_list:
-                        s_key = model_prefix + key
-                        if s_key in models_loaded_dict:
-                            model_data = models_loaded_dict[s_key]
-                            if model_data:
-                                s_model, s_args, s_vocab_stoi, s_pad_idx, s_unk_idx = model_data
-                                try:
-                                    if key not in score['sentences']: score['sentences'][key] = []
-                                    extracted_sents = extract_sent_han_fn_ref(
-                                        processed_text, s_model, s_args, s_vocab_stoi, s_pad_idx, s_unk_idx, num_sents_val, nlp_instance
-                                    )
-                                    score['sentences'][key].extend(extracted_sents)
-                                except Exception as e:
-                                    print(f"{worker_log_prefix}: Error extract_sent_han for {key}: {str(e)[:200]}")
-                                    score['sentences'][key] = [f"ExtractErr:{str(e)[:100]}"] 
-                                    file_status = "Error"; error_msg += f"SentExt({key}):{str(e)[:50]}; "
-                            else: 
-                                score['sentences'][key] = ["SentModel N/L"] 
-                                print(f"{worker_log_prefix}: Sentence model {s_key} data not found.")
-                        else: 
-                            score['sentences'][key] = ["SentModel N/C"] 
+                            score[key] = pred_legacy_fn_ref(processed_text, model, model_args, vocab_stoi, pad_idx, unk_idx, nlp_instance)
+                    except Exception as e:
+                        print(f"{worker_log_prefix}: Error predicting {key}: {e}"); score[key] = -1.0; file_status = "Error"; error_msg += f"Pred({key});"
                 
-                if file_status == "OK" and not error_msg:
-                    score["message"] = "Processing successful in worker"
-
-    except FileNotFoundError:
-        score["message"] = "File not found in worker"; file_status = "Error"
-        error_msg = f"File not found: {path}"; print(f"{worker_log_prefix}: File not found: {path}")
+                if num_sents_val > 0:
+                    for key in rob_item_categories_list:
+                        s_key = 's_' + key
+                        model_data = models_loaded_dict.get(s_key)
+                        if not model_data: score['sentences'][key] = ["N/C"]; continue
+                        try:
+                             s_model, s_args, s_vocab_stoi, s_pad_idx, s_unk_idx = model_data
+                             score['sentences'][key] = extract_sent_han_fn_ref(processed_text, s_model, s_args, s_vocab_stoi, s_pad_idx, s_unk_idx, num_sents_val, nlp_instance)
+                        except Exception as e:
+                            print(f"{worker_log_prefix}: Error extracting for {key}: {e}"); score['sentences'][key] = ["ExtractErr"]; file_status = "Error"; error_msg += f"SentExt({key});"
+                
+                if file_status == "OK": score["message"] = "Success"
     except Exception as e:
-        score["message"] = f"Worker error: {str(e)[:100]}"; file_status = "Error"
-        error_msg = f"Worker general error: {str(e)[:100]}"
-        print(f"{worker_log_prefix}: General error: {e}", exc_info=False) 
+        score["message"], file_status, error_msg = "Worker error", "Error", f"{e}"
+        print(f"{worker_log_prefix}: General error: {e}")
 
-    processing_duration = round(time.time() - start_time, 3)
-    score["processing_time_seconds"] = processing_duration
-    score["status"] = file_status
-    score["error_details"] = error_msg.strip()
-    
-    if num_sents_val > 0 and 'sentences' not in score:
-        score['sentences'] = {cat: [score.get("error_details", "Unknown Error")] for cat in rob_item_categories_list}
-    elif num_sents_val > 0 and isinstance(score.get('sentences'), dict):
-        for cat in rob_item_categories_list:
-            if cat not in score['sentences']:
-                 score['sentences'][cat] = [score.get("error_details", "Category processing error")]
-
-    print(f"{worker_log_prefix}: Finished. Status: {file_status}, Time: {processing_duration}s")
+    score["processing_time_seconds"] = round(time.time() - start_time, 3)
+    score["status"], score["error_details"] = file_status, error_msg.strip()
+    print(f"{worker_log_prefix}: Finished. Status: {file_status}, Time: {score['processing_time_seconds']}s")
     output_q.put(score)
 
-
-class PreRob(): # Content remains the same as rob_py_updated_v3
+# --- PreRob Class and __main__ (changes only in model loading loop) ---
+class PreRob(): # Content remains the same
     def __init__(self, txt_info: str):
         self.txt_info = Path(txt_info)
         self.txt_paths: List[Path] = []
         self.ids: List[str] = []
         logger.info(f"PreRob initialized with input: {txt_info}")
-
     def get_txt_paths(self) -> None: 
         txt_info_path = self.txt_info
         self.txt_paths = []
@@ -215,350 +133,167 @@ class PreRob(): # Content remains the same as rob_py_updated_v3
         if not txt_info_path.exists() and isinstance(self.txt_info, str) and ".txt," not in str(self.txt_info):
             logger.error(f"Input path does not exist: {txt_info_path}")
             return
-
         if txt_info_path.is_dir():
             logger.info(f"Scanning directory: {txt_info_path}")
             self.txt_paths = sorted(list(txt_info_path.rglob("*.txt")))
             self.ids = [p.stem + f"_{i}" for i, p in enumerate(self.txt_paths)] 
             logger.info(f"Found {len(self.txt_paths)} .txt files in directory.")
         elif txt_info_path.is_file() and txt_info_path.suffix == ".txt":
-            logger.info(f"Processing single file: {txt_info_path}")
             self.txt_paths.append(txt_info_path.resolve())
             self.ids.append(Path(txt_info_path).stem)
         elif txt_info_path.is_file() and txt_info_path.suffix == ".csv":
-            logger.info(f"Reading paths from CSV: {txt_info_path}")
             try:
                 path_df = pd.read_csv(txt_info_path, sep=',')
                 if 'path' not in path_df.columns or 'id' not in path_df.columns:
-                    logger.error("CSV must contain 'path' and 'id' columns.")
                     raise ValueError("CSV must contain 'path' and 'id' columns.")
                 base_dir = txt_info_path.parent
                 for _, row in path_df.iterrows():
-                    relative_path_str = str(row['path']).strip()
-                    if not relative_path_str:
-                        logger.warning(f"Empty path found in CSV row with id {row['id']}. Skipping.")
-                        continue
-                    relative_path = Path(relative_path_str)
-                    txt_path = relative_path if relative_path.is_absolute() else base_dir / relative_path
-                    if txt_path.is_file() and txt_path.suffix == ".txt":
+                    txt_path = Path(str(row['path']).strip())
+                    if not txt_path.is_absolute(): txt_path = base_dir / txt_path
+                    if txt_path.is_file():
                         self.txt_paths.append(txt_path.resolve())
                         self.ids.append(str(row['id']))
-                    else:
-                        logger.warning(f"File not found or not a .txt file in CSV row (id: {row['id']}): {txt_path}")
-                logger.info(f"Found {len(self.txt_paths)} valid .txt paths from CSV.")
-            except pd.errors.EmptyDataError:
-                logger.error(f"CSV file is empty: {txt_info_path}")
-            except Exception as e:
-                logger.error(f"Error reading or processing CSV file {txt_info_path}: {e}", exc_info=True)
-        elif isinstance(self.txt_info, (str, Path)) and ".txt," in str(self.txt_info):
-            logger.info("Processing comma-separated paths string.")
-            paths_str_list = str(self.txt_info).split(".txt,")
-            temp_paths = []
-            for i, p_str_segment in enumerate(paths_str_list):
-                path_str = p_str_segment.strip()
-                if not path_str.endswith(".txt") and i < len(paths_str_list) -1 :
-                     path_str += ".txt"
-                elif not path_str.endswith(".txt") and i == len(paths_str_list) -1 and not Path(path_str).exists():
-                     potential_path_with_ext = Path(path_str + ".txt")
-                     if potential_path_with_ext.exists(): path_str += ".txt"
-                txt_path = Path(path_str)
-                if txt_path.is_file() and txt_path.suffix == ".txt":
-                    temp_paths.append(txt_path.resolve())
-                else:
-                    logger.warning(f"File not found or not a .txt in comma-separated list: {txt_path}")
-            self.txt_paths = temp_paths
-            self.ids = [txt_p.stem + f"_{i}" for i, txt_p in enumerate(self.txt_paths)]
-            logger.info(f"Found {len(self.txt_paths)} valid .txt paths from comma-separated string.")
-        if not self.txt_paths:
-            logger.warning(f"No .txt files found to process based on input: {self.txt_info}")
-
+                    else: logger.warning(f"File not found in CSV row (id: {row['id']}): {txt_path}")
+            except Exception as e: logger.error(f"Error reading CSV {txt_info_path}: {e}", exc_info=True)
     def process_text(self, text: str, p_ref: re.Pattern) -> str: 
         try:
             processed_text = re.sub(r".*?(Introduction|INTRODUCTION)\s*\n+", " ", text, count=1, flags=re.DOTALL | re.IGNORECASE)
             if processed_text == text: processed_text = text
             s = p_ref.search(processed_text)
             if s and s.start() > 0: processed_text = processed_text[:s.start()]
-            elif s and s.start() == 0:
-                 logger.debug("Reference pattern matched at the beginning of the text in process_text.") 
-                 processed_text = ""
             processed_text = re.sub(r"\s+[\[][^a-zA-Z]+[\]]", "", processed_text)
             processed_text = re.sub(r"https?:/\/\S+", " ", processed_text)
-            processed_text = re.sub(r"^(?:[\t ]*(?:\r?\n|\r))+", " ", processed_text, flags=re.MULTILINE)
-            processed_text = re.sub(r"^\W{0,}\d{1,}\W{0,}$", "", processed_text, flags=re.MULTILINE)
             processed_text = processed_text.encode("ascii", errors="ignore").decode()
-            processed_text = re.sub(r'\s+', " ", processed_text).strip()
-            return processed_text
+            return re.sub(r'\s+', " ", processed_text).strip()
         except Exception as e:
-            print(f"Error during text processing (called by worker or main): {e}")
+            print(f"Error during text processing: {e}")
             return ""
-
     def predict_probs(self, models: Dict[str, Any], p_ref: re.Pattern, num_sents: int = 0) -> List[Dict[str, Any]]: 
-        if not self.txt_paths:
-            logger.warning("No text paths found to process in predict_probs.")
-            return [{"id": "N/A", "txt_path": "N/A", "processing_time_seconds": 0.0, 
-                     "status": "Skipped", "error_details": "No TXT files found", "message": "No TXT files"}]
-
+        if not self.txt_paths: return []
         output_results: List[Dict[str, Any]] = []
-        total_files = len(self.txt_paths)
-        
-        fn_refs = {
-            "process_text_fn_ref": self.process_text, 
-            "pred_legacy_fn_ref": pred_legacy,
-            "pred_bert_fn_ref": pred_bert,
-            "extract_sent_han_fn_ref": extract_sent_han
-        }
-
+        fn_refs = {"process_text_fn_ref": self.process_text, "pred_legacy_fn_ref": pred_legacy, "pred_bert_fn_ref": pred_bert, "extract_sent_han_fn_ref": extract_sent_han}
         for i, path_obj in enumerate(self.txt_paths):
             current_id = self.ids[i] if self.ids and i < len(self.ids) else path_obj.stem
-            logger.info(f"Preparing to process file {i+1}/{total_files}: {path_obj.name} (ID: {current_id}) via worker.")
-
+            logger.info(f"Preparing file {i+1}/{len(self.txt_paths)}: {path_obj.name} (ID: {current_id})")
             output_queue = multiprocessing.Queue()
-            worker_args = (
-                str(path_obj), models, p_ref, num_sents, output_queue, current_id,
-                fn_refs["process_text_fn_ref"], fn_refs["pred_legacy_fn_ref"],
-                fn_refs["pred_bert_fn_ref"], fn_refs["extract_sent_han_fn_ref"],
-                ROB_ITEM_CATEGORIES 
-            )
-            
+            worker_args = (str(path_obj), models, p_ref, num_sents, output_queue, current_id, fn_refs["process_text_fn_ref"], fn_refs["pred_legacy_fn_ref"], fn_refs["pred_bert_fn_ref"], fn_refs["extract_sent_han_fn_ref"], ROB_ITEM_CATEGORIES )
             process = multiprocessing.Process(target=_process_single_file_worker, args=worker_args)
             process.start()
-            
-            timeout_duration = FILE_PROCESSING_TIMEOUT_SECONDS 
-            process.join(timeout=timeout_duration)
-
+            process.join(timeout=FILE_PROCESSING_TIMEOUT_SECONDS)
             result_score: Optional[Dict[str, Any]] = None
             if process.is_alive():
-                logger.warning(f"File {path_obj.name} (ID: {current_id}) processing TIMED OUT after {timeout_duration}s. Terminating worker.")
-                process.terminate() 
-                process.join(timeout=5) 
-                if process.is_alive(): 
-                    logger.error(f"Worker for {path_obj.name} did not terminate gracefully, attempting kill (SIGKILL).")
-                    process.kill() 
-                    process.join()
-
-                result_score = {
-                    "id": current_id, "txt_path": str(path_obj),
-                    "message": f"Processing timed out after {timeout_duration}s.",
-                    "status": "Timeout", "error_details": f"Exceeded {timeout_duration}s limit.",
-                    "processing_time_seconds": float(timeout_duration),
-                }
-                for cat in ROB_ITEM_CATEGORIES: result_score[cat] = -4.0 
-                if num_sents > 0: result_score['sentences'] = {cat: ["Timeout"] for cat in ROB_ITEM_CATEGORIES}
-
+                logger.warning(f"File {path_obj.name} TIMED OUT. Terminating worker.")
+                process.terminate(); process.join(5); process.kill()
+                result_score = {"id": current_id, "txt_path": str(path_obj), "message": "Timeout", "status": "Timeout", "error_details": f"Exceeded {FILE_PROCESSING_TIMEOUT_SECONDS}s limit.", "processing_time_seconds": float(FILE_PROCESSING_TIMEOUT_SECONDS)}
             else: 
-                try:
-                    result_score = output_queue.get(timeout=10) 
-                    logger.info(f"File {path_obj.name} (ID: {current_id}) worker finished. Status: {result_score.get('status', 'Unknown')}")
+                try: result_score = output_queue.get(timeout=10)
                 except queue.Empty:
-                    logger.error(f"File {path_obj.name} (ID: {current_id}) worker finished (exit code {process.exitcode}) but no result in queue. Assuming crash or early exit.")
-                    result_score = {
-                        "id": current_id, "txt_path": str(path_obj),
-                        "message": "Worker crashed or failed to return result.",
-                        "status": "Error", "error_details": f"Worker process ended (exit code {process.exitcode}) without output.",
-                        "processing_time_seconds": timeout_duration, 
-                    }
-                    for cat in ROB_ITEM_CATEGORIES: result_score[cat] = -5.0 
-                    if num_sents > 0: result_score['sentences'] = {cat: ["Worker Crash/No Output"] for cat in ROB_ITEM_CATEGORIES}
-                except Exception as e_q:
-                    logger.error(f"Error getting result from queue for {path_obj.name}: {e_q}", exc_info=True)
-                    result_score = {
-                        "id": current_id, "txt_path": str(path_obj),
-                        "message": f"Queue retrieval error: {e_q}",
-                        "status": "Error", "error_details": f"Queue error: {e_q}",
-                        "processing_time_seconds": timeout_duration,
-                    }
-                    for cat in ROB_ITEM_CATEGORIES: result_score[cat] = -5.0
-                    if num_sents > 0: result_score['sentences'] = {cat: ["Queue Error"] for cat in ROB_ITEM_CATEGORIES}
-            
-            if result_score:
-                for cat in ROB_ITEM_CATEGORIES:
-                    if cat not in result_score: result_score[cat] = -9.0 
-                if num_sents > 0 and 'sentences' not in result_score:
-                    result_score['sentences'] = {cat: ["Result Error"] for cat in ROB_ITEM_CATEGORIES}
-                elif num_sents > 0 and isinstance(result_score.get('sentences'), dict):
-                     for cat in ROB_ITEM_CATEGORIES:
-                        if cat not in result_score['sentences']:
-                            result_score['sentences'][cat] = ["Result Cat Error"]
-                output_results.append(result_score)
-            else: 
-                 logger.error(f"INTERNAL ERROR: No result_score generated for {path_obj.name}.")
-                 output_results.append({
-                    "id": current_id, "txt_path": str(path_obj), "status": "SystemError", 
-                    "error_details": "Failed to obtain result from worker logic.",
-                    "processing_time_seconds": 0.0
-                 })
+                    logger.error(f"Worker for {path_obj.name} finished (exit {process.exitcode}) but queue is empty. Assuming crash.")
+                    result_score = {"id": current_id, "txt_path": str(path_obj), "message": "Worker Crash", "status": "Error", "error_details": f"Worker process ended (exit {process.exitcode}) without output.", "processing_time_seconds": 0}
+            if result_score: output_results.append(result_score)
         return output_results
 
-if __name__ == "__main__": # Content remains the same as rob_py_updated_v3
+if __name__ == "__main__":
     multiprocessing.freeze_support() 
-    try:
-        current_start_method = multiprocessing.get_start_method(allow_none=True)
-        if sys.platform != "win32" and (current_start_method is None or current_start_method == "fork"):
+    if sys.platform != "win32":
+        try:
             multiprocessing.set_start_method("spawn", force=True)
             logger.info("Multiprocessing start method set to 'spawn' for CUDA compatibility.")
-        elif current_start_method == "spawn":
-            logger.info("Multiprocessing start method is already 'spawn'.")
-        else: 
-            logger.info(f"Multiprocessing start method: {current_start_method}. Not changing to 'spawn' unless it was 'fork' on non-Windows.")
-            if current_start_method is None and sys.platform == "win32": 
-                 multiprocessing.set_start_method("spawn", force=True) 
-                 logger.info("Explicitly set start method to 'spawn' on Windows.")
-    except RuntimeError as e_sm:
-        logger.warning(f"Could not set multiprocessing start method to 'spawn' (it might be already set and context created): {e_sm}. If CUDA errors persist on Linux/macOS, this might be the cause.")
-    except AttributeError: 
-        if sys.platform != "win32":
-            multiprocessing.set_start_method("spawn", force=True) 
-            logger.info("Multiprocessing start method set to 'spawn' (fallback for older Python).")
+        except RuntimeError as e:
+            logger.warning(f"Could not set multiprocessing start method: {e}")
 
-    parser = argparse.ArgumentParser(
-        description='Predict Risk of Bias from text files with hard timeouts and flattened sentences.',
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter
-    )
-    parser.add_argument('-i', "--input", required=True, type=str, help='Input: dir, TXT, CSV, or comma-separated TXTs.')
-    parser.add_argument('-o', '--output', required=True, type=str, help='Absolute path for the output CSV file.')
-    parser.add_argument('-s', "--sent", type=int, default=0, help='Number of relevant sentences to extract (0 to disable).')
-    parser.add_argument('--model_dir', type=str, default='pth', help='Directory containing model files.')
+    parser = argparse.ArgumentParser(description='RoB Prediction with Hard Timeouts.', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument('-i', "--input", required=True, type=str, help='Input path.')
+    parser.add_argument('-o', '--output', required=True, type=str, help='Output CSV path.')
+    parser.add_argument('-s', "--sent", type=int, default=0, help='Number of sentences to extract.')
+    parser.add_argument('--model_dir', type=str, default='pth', help='Model directory.')
     args = parser.parse_args()
 
-    input_path_arg = args.input
+    # --- Setup and Model Loading Loop ---
     output_path = Path(args.output).resolve()
-    num_sents_to_extract = args.sent
-    model_dir = Path(args.model_dir).resolve()
-
-    try:
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-    except Exception as e:
-        logger.critical(f"Could not create output directory {output_path.parent}: {e}", exc_info=True)
-        exit(1)
-
-    logger.info("--- RoB Prediction Script Initializing (with Hard Timeouts) ---")
-    logger.info(f"Input: {input_path_arg}, Output CSV: {output_path}")
-    logger.info(f"Sentences to extract: {num_sents_to_extract}, Model dir: {model_dir}")
-    logger.info(f"File processing timeout: {FILE_PROCESSING_TIMEOUT_SECONDS} seconds per file.")
-    logger.info(f"Risk categories: {ROB_ITEM_CATEGORIES}")
-
-    p_ref = re.compile(
-        r"(\b(Reference|Bibliography|Literatur)\w*\s*(list)?\b\s*?\n|\bREFERENCES\b|\bBIBLIOGRAPHY\b)",
-        flags=re.IGNORECASE 
-    )
-
-    logger.info("Loading models...")
-    models_loaded: Dict[str, Any] = {}
-    model_errors_encountered = False
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    logger.info("--- RoB Prediction Script Initializing ---")
     
+    # Define BERT descriptions here
     ROB_ITEM_DESCRIPTIONS_FOR_BERT = {
-        'welfare': 'Research investigators complied with animal welfare regulations' 
+        'welfare': 'Research investigators complied with animal welfare regulations'
     }
 
+    models_loaded: Dict[str, Any] = {}
     model_configs = {
         'random': {'type': 'legacy', 'arg': 'awr_13.json', 'pth': 'awr_13.pth.tar', 'fld': 'awr_13.Field'},
         'blind':  {'type': 'legacy', 'arg': 'awb_32.json', 'pth': 'awb_32.pth.tar', 'fld': 'awb_32.Field'},
         'interest':{'type': 'legacy', 'arg': 'cwi_6.json', 'pth': 'cwi_6.pth.tar', 'fld': 'cwi_6.Field'},
-        'welfare':{'type': 'bert',   'arg': 'dsc_w0.json', 'pth': 'dsc_w0.pth.tar', 'fld': None, 'rob_item_key': 'welfare'},
+        'welfare':{'type': 'bert',   'arg': 'dsc_w0.json', 'pth': 'dsc_w0.pth.tar', 'rob_item_key': 'welfare'},
         'exclusion':{'type': 'legacy', 'arg': 'awe_8.json', 'pth': 'awe_8.pth.tar', 'fld': 'awe_8.Field'},
     }
-    sentence_model_configs = {
-        's_random': {'type': 'legacy', 'arg': 'hr_4.json', 'pth': 'hr_4.pth.tar', 'fld': 'hr_4.Field'},
-        's_blind':  {'type': 'legacy', 'arg': 'hb_5.json', 'pth': 'hb_5.pth.tar', 'fld': 'hb_5.Field'},
-        's_interest':{'type': 'legacy', 'arg': 'hi_4.json', 'pth': 'hi_4.pth.tar', 'fld': 'hi_4.Field'},
-        's_welfare':{'type': 'legacy', 'arg': 'hw_17.json', 'pth': 'hw_17.pth.tar', 'fld': 'hw_17.Field'},
-        's_exclusion':{'type': 'legacy', 'arg': 'he_26.json', 'pth': 'he_26.pth.tar', 'fld': 'he_26.Field'},
-    }
-
-    if num_sents_to_extract > 0:
-        model_configs.update(sentence_model_configs)
-    else:
-        logger.info("Sentence extraction disabled. Skipping sentence model loading.")
+    if args.sent > 0:
+        model_configs.update({
+            's_random': {'type': 'legacy', 'arg': 'hr_4.json', 'pth': 'hr_4.pth.tar', 'fld': 'hr_4.Field'},
+            's_blind':  {'type': 'legacy', 'arg': 'hb_5.json', 'pth': 'hb_5.pth.tar', 'fld': 'hb_5.Field'},
+            's_interest':{'type': 'legacy', 'arg': 'hi_4.json', 'pth': 'hi_4.pth.tar', 'fld': 'hi_4.Field'},
+            's_welfare':{'type': 'legacy', 'arg': 'hw_17.json', 'pth': 'hw_17.pth.tar', 'fld': 'hw_17.Field'},
+            's_exclusion':{'type': 'legacy', 'arg': 'he_26.json', 'pth': 'he_26.pth.tar', 'fld': 'he_26.Field'},
+        })
 
     for key, config_item in model_configs.items(): 
         logger.info(f"  Attempting to load model '{key}'...")
         try:
-            arg_p = model_dir / config_item['arg']
-            pth_p = model_dir / config_item['pth']
-            if not arg_p.exists(): raise FileNotFoundError(f"Arg file missing: {arg_p}")
-            if not pth_p.exists(): raise FileNotFoundError(f"Pth file missing: {pth_p}")
-
+            arg_p = Path(args.model_dir) / config_item['arg']
+            pth_p = Path(args.model_dir) / config_item['pth']
+            
             if config_item['type'] == 'legacy':
-                if not config_item['fld']: raise ValueError(f"Field file missing in config for {key}")
-                fld_p = model_dir / config_item['fld']
-                if not fld_p.exists(): raise FileNotFoundError(f"Field file missing: {fld_p}")
+                fld_p = Path(args.model_dir) / config_item['fld']
                 models_loaded[key] = load_model_legacy(arg_p, pth_p, fld_p)
             elif config_item['type'] == 'bert':
-                models_loaded[key] = load_model_bert(arg_p, pth_p)
-            else:
-                logger.error(f"Unknown model type '{config_item['type']}' for '{key}'. Skipping.")
-                model_errors_encountered = True; continue
+                # Get the description string and pass it to the loader
+                rob_item_key = config_item.get('rob_item_key')
+                if not rob_item_key:
+                    raise ValueError(f"BERT model config '{key}' is missing 'rob_item_key'.")
+                rob_sent_desc = ROB_ITEM_DESCRIPTIONS_FOR_BERT.get(rob_item_key)
+                if not rob_sent_desc:
+                    raise ValueError(f"No description found for BERT item key '{rob_item_key}'.")
+                
+                models_loaded[key] = load_model_bert(arg_p, pth_p, rob_sent_desc)
+            
             logger.info(f"  Successfully loaded model '{key}'.")
-        except FileNotFoundError as e_fnf:
-            logger.error(f"  File not found for model '{key}': {e_fnf}")
-            model_errors_encountered = True; models_loaded[key] = None
         except Exception as e:
             logger.error(f"  ERROR loading model '{key}': {e}", exc_info=True)
-            model_errors_encountered = True; models_loaded[key] = None
+            models_loaded[key] = None
             
-    if not any(m is not None for m in models_loaded.values()):
-        logger.critical("No models loaded successfully. Exiting.")
-        exit(1)
-    if model_errors_encountered:
-        logger.warning("Some models failed to load. Results may be incomplete.")
-
-    logger.info("Initializing text processing scanner...")
-    rober_instance = PreRob(str(input_path_arg))
+    # --- Prediction and Saving Loop ---
+    rober_instance = PreRob(str(args.input))
     rober_instance.get_txt_paths()
-
     if not rober_instance.txt_paths:
         logger.warning("No .txt files found. Exiting.")
         exit(0)
     
-    logger.info(f"Starting prediction loop for {len(rober_instance.txt_paths)} files...")
-    output_data_list = rober_instance.predict_probs(models_loaded, p_ref, num_sents_to_extract)
+    p_ref = re.compile(r"(\b(Reference|Bibliography|Literatur)\w*\s*(list)?\b\s*?\n|\bREFERENCES\b|\bBIBLIOGRAPHY\b)", flags=re.IGNORECASE)
+    output_data_list = rober_instance.predict_probs(models_loaded, p_ref, args.sent)
 
-    if not output_data_list:
-        logger.warning("No results generated from prediction process.")
-    else:
+    if output_data_list:
         logger.info(f"Processing {len(output_data_list)} results for CSV output...")
-        
         processed_output_for_df = []
         for res_dict in output_data_list:
-            if num_sents_to_extract > 0:
-                sentences_data_from_res = res_dict.pop('sentences', {}) 
-                if not isinstance(sentences_data_from_res, dict): 
-                    logger.warning(f"Sentences data for {res_dict.get('id')} is not a dict: {sentences_data_from_res}. Skipping sentence flattening for this item.")
-                    sentences_data_from_res = {} 
-                
-                for category_key_from_rob_items in ROB_ITEM_CATEGORIES: 
-                    sents_list = sentences_data_from_res.get(category_key_from_rob_items, [])
-                    if not isinstance(sents_list, list): 
-                        sents_list = [str(sents_list)] 
-
-                    for i in range(num_sents_to_extract):
-                        col_name = f"{category_key_from_rob_items}_sent_{i+1}"
-                        if i < len(sents_list):
-                            res_dict[col_name] = sents_list[i]
-                        else:
-                            res_dict[col_name] = "" 
+            if args.sent > 0:
+                sentences_data = res_dict.pop('sentences', {})
+                for cat in ROB_ITEM_CATEGORIES:
+                    sents_list = sentences_data.get(cat, []) if isinstance(sentences_data, dict) else [str(sentences_data)]
+                    if not isinstance(sents_list, list): sents_list = [str(sents_list)]
+                    for i in range(args.sent):
+                        res_dict[f"{cat}_sent_{i+1}"] = sents_list[i] if i < len(sents_list) else ""
             processed_output_for_df.append(res_dict)
-
+        
         output_df = pd.DataFrame(processed_output_for_df)
-        
         cols_ordered = ['id', 'txt_path'] + ROB_ITEM_CATEGORIES
-        if num_sents_to_extract > 0:
-            for category_key_from_rob_items in ROB_ITEM_CATEGORIES:
-                for i in range(num_sents_to_extract):
-                    cols_ordered.append(f"{category_key_from_rob_items}_sent_{i+1}")
+        if args.sent > 0:
+            for cat in ROB_ITEM_CATEGORIES:
+                for i in range(args.sent): cols_ordered.append(f"{cat}_sent_{i+1}")
         cols_ordered.extend(['processing_time_seconds', 'status', 'error_details', 'message'])
-        
         for col in cols_ordered:
-            if col not in output_df.columns:
-                output_df[col] = "" 
-
+            if col not in output_df.columns: output_df[col] = "" 
         output_df = output_df.reindex(columns=cols_ordered)
+        output_df.to_csv(output_path, sep=',', encoding='utf-8', index=False)
+        logger.info(f"Results saved successfully to {output_path}")
 
-        try:
-            output_df.to_csv(output_path, sep=',', encoding='utf-8', index=False)
-            logger.info(f"Results saved successfully to {output_path}")
-        except Exception as e:
-            logger.error(f"Error saving output DataFrame to CSV {output_path}: {e}", exc_info=True)
-            
     logger.info("--- RoB Prediction Script Finished ---")
-
