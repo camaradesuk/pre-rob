@@ -69,15 +69,13 @@ def _process_single_file_worker(
     Initializes its own spaCy nlp instance with a sentencizer.
     """
     nlp_instance = None
-    worker_log_prefix = f"Worker_{os.getpid()}_for_{current_id_val} ({Path(file_path_str).name})" # Add PID for clarity
+    worker_log_prefix = f"Worker_{os.getpid()}_for_{current_id_val} ({Path(file_path_str).name})" 
     try:
         nlp_instance = spacy.load("en_core_web_sm", disable=["parser", "ner"])
+        # Correct way to add sentencizer for spaCy v2.x
         if not nlp_instance.has_pipe("sentencizer"):
-            # Using a different way to create and add pipe if create_pipe is not available directly
-            # For spaCy v2.x: sentencizer = nlp_instance.create_pipe("sentencizer")
-            # For spaCy v3.x: sentencizer = "sentencizer" (name of factory)
-            # nlp_instance.add_pipe("sentencizer", first=True) is generally robust
-            nlp_instance.add_pipe("sentencizer", first=True)
+            sentencizer_pipe = nlp_instance.create_pipe("sentencizer")
+            nlp_instance.add_pipe(sentencizer_pipe, first=True)
         print(f"{worker_log_prefix}: spaCy nlp instance loaded with sentencizer.")
     except Exception as e_nlp:
         print(f"{worker_log_prefix}: Failed to load/configure spaCy model: {e_nlp}")
@@ -129,7 +127,7 @@ def _process_single_file_worker(
                             try:
                                 score[key] = pred_legacy_fn_ref(processed_text, model, model_args, vocab_stoi, pad_idx, unk_idx, nlp_instance)
                             except Exception as e:
-                                print(f"{worker_log_prefix}: Error pred_legacy for {key}: {str(e)[:200]}") # Keep error short
+                                print(f"{worker_log_prefix}: Error pred_legacy for {key}: {str(e)[:200]}") 
                                 score[key] = -1.0
                                 file_status = "Error"; error_msg += f"PredLg({key}):{str(e)[:50]}; "
                         else: score[key] = -2.0
@@ -168,13 +166,13 @@ def _process_single_file_worker(
                                     score['sentences'][key].extend(extracted_sents)
                                 except Exception as e:
                                     print(f"{worker_log_prefix}: Error extract_sent_han for {key}: {str(e)[:200]}")
-                                    score['sentences'][key] = [f"ExtractErr:{str(e)[:100]}"] # Make error message shorter for CSV
+                                    score['sentences'][key] = [f"ExtractErr:{str(e)[:100]}"] 
                                     file_status = "Error"; error_msg += f"SentExt({key}):{str(e)[:50]}; "
                             else: 
-                                score['sentences'][key] = ["SentModel N/L"] # Not Loaded
+                                score['sentences'][key] = ["SentModel N/L"] 
                                 print(f"{worker_log_prefix}: Sentence model {s_key} data not found.")
                         else: 
-                            score['sentences'][key] = ["SentModel N/C"] # Not in Config
+                            score['sentences'][key] = ["SentModel N/C"] 
                 
                 if file_status == "OK" and not error_msg:
                     score["message"] = "Processing successful in worker"
@@ -185,14 +183,13 @@ def _process_single_file_worker(
     except Exception as e:
         score["message"] = f"Worker error: {str(e)[:100]}"; file_status = "Error"
         error_msg = f"Worker general error: {str(e)[:100]}"
-        print(f"{worker_log_prefix}: General error: {e}", exc_info=False) # Set exc_info to False to avoid huge logs from worker
+        print(f"{worker_log_prefix}: General error: {e}", exc_info=False) 
 
     processing_duration = round(time.time() - start_time, 3)
     score["processing_time_seconds"] = processing_duration
     score["status"] = file_status
     score["error_details"] = error_msg.strip()
     
-    # Ensure sentences dict exists if num_sents_val > 0, even on error paths
     if num_sents_val > 0 and 'sentences' not in score:
         score['sentences'] = {cat: [score.get("error_details", "Unknown Error")] for cat in rob_item_categories_list}
     elif num_sents_val > 0 and isinstance(score.get('sentences'), dict):
@@ -200,19 +197,18 @@ def _process_single_file_worker(
             if cat not in score['sentences']:
                  score['sentences'][cat] = [score.get("error_details", "Category processing error")]
 
-
     print(f"{worker_log_prefix}: Finished. Status: {file_status}, Time: {processing_duration}s")
     output_q.put(score)
 
 
-class PreRob():
+class PreRob(): # Content remains the same as rob_py_updated_v3
     def __init__(self, txt_info: str):
         self.txt_info = Path(txt_info)
         self.txt_paths: List[Path] = []
         self.ids: List[str] = []
         logger.info(f"PreRob initialized with input: {txt_info}")
 
-    def get_txt_paths(self) -> None: # Same as v2
+    def get_txt_paths(self) -> None: 
         txt_info_path = self.txt_info
         self.txt_paths = []
         self.ids = []
@@ -276,8 +272,7 @@ class PreRob():
         if not self.txt_paths:
             logger.warning(f"No .txt files found to process based on input: {self.txt_info}")
 
-
-    def process_text(self, text: str, p_ref: re.Pattern) -> str: # Same as v2
+    def process_text(self, text: str, p_ref: re.Pattern) -> str: 
         try:
             processed_text = re.sub(r".*?(Introduction|INTRODUCTION)\s*\n+", " ", text, count=1, flags=re.DOTALL | re.IGNORECASE)
             if processed_text == text: processed_text = text
@@ -297,7 +292,7 @@ class PreRob():
             print(f"Error during text processing (called by worker or main): {e}")
             return ""
 
-    def predict_probs(self, models: Dict[str, Any], p_ref: re.Pattern, num_sents: int = 0) -> List[Dict[str, Any]]: # Same as v2 logic, just ensuring consistency
+    def predict_probs(self, models: Dict[str, Any], p_ref: re.Pattern, num_sents: int = 0) -> List[Dict[str, Any]]: 
         if not self.txt_paths:
             logger.warning("No text paths found to process in predict_probs.")
             return [{"id": "N/A", "txt_path": "N/A", "processing_time_seconds": 0.0, 
@@ -375,18 +370,15 @@ class PreRob():
                     for cat in ROB_ITEM_CATEGORIES: result_score[cat] = -5.0
                     if num_sents > 0: result_score['sentences'] = {cat: ["Queue Error"] for cat in ROB_ITEM_CATEGORIES}
             
-            # Ensure default values for score fields if not set by worker (e.g. on early crash)
             if result_score:
                 for cat in ROB_ITEM_CATEGORIES:
-                    if cat not in result_score: result_score[cat] = -9.0 # Undefined/Early exit
+                    if cat not in result_score: result_score[cat] = -9.0 
                 if num_sents > 0 and 'sentences' not in result_score:
                     result_score['sentences'] = {cat: ["Result Error"] for cat in ROB_ITEM_CATEGORIES}
                 elif num_sents > 0 and isinstance(result_score.get('sentences'), dict):
                      for cat in ROB_ITEM_CATEGORIES:
                         if cat not in result_score['sentences']:
                             result_score['sentences'][cat] = ["Result Cat Error"]
-
-
                 output_results.append(result_score)
             else: 
                  logger.error(f"INTERNAL ERROR: No result_score generated for {path_obj.name}.")
@@ -397,34 +389,26 @@ class PreRob():
                  })
         return output_results
 
-if __name__ == "__main__":
+if __name__ == "__main__": # Content remains the same as rob_py_updated_v3
     multiprocessing.freeze_support() 
-    
-    # Set the start method to 'spawn' for CUDA compatibility with multiprocessing
-    # This must be done before any Pool or Process is created, and only once.
     try:
         current_start_method = multiprocessing.get_start_method(allow_none=True)
-        # Only set if not already 'spawn' or if it's 'fork' on a non-Windows OS (where 'fork' is problematic with CUDA)
-        # On Windows, 'spawn' is the default and usually the only option.
         if sys.platform != "win32" and (current_start_method is None or current_start_method == "fork"):
             multiprocessing.set_start_method("spawn", force=True)
             logger.info("Multiprocessing start method set to 'spawn' for CUDA compatibility.")
         elif current_start_method == "spawn":
             logger.info("Multiprocessing start method is already 'spawn'.")
-        else: # Handles Windows (default is spawn) or if already set to something else non-fork
+        else: 
             logger.info(f"Multiprocessing start method: {current_start_method}. Not changing to 'spawn' unless it was 'fork' on non-Windows.")
-            if current_start_method is None and sys.platform == "win32": # Should be spawn by default on win
-                 multiprocessing.set_start_method("spawn", force=True) # Explicitly set for clarity/safety
+            if current_start_method is None and sys.platform == "win32": 
+                 multiprocessing.set_start_method("spawn", force=True) 
                  logger.info("Explicitly set start method to 'spawn' on Windows.")
-
-
     except RuntimeError as e_sm:
         logger.warning(f"Could not set multiprocessing start method to 'spawn' (it might be already set and context created): {e_sm}. If CUDA errors persist on Linux/macOS, this might be the cause.")
-    except AttributeError: # get_start_method(allow_none=True) might not exist in very old Python 3 versions
+    except AttributeError: 
         if sys.platform != "win32":
-            multiprocessing.set_start_method("spawn", force=True) # Fallback for older Python
+            multiprocessing.set_start_method("spawn", force=True) 
             logger.info("Multiprocessing start method set to 'spawn' (fallback for older Python).")
-
 
     parser = argparse.ArgumentParser(
         description='Predict Risk of Bias from text files with hard timeouts and flattened sentences.',
@@ -462,12 +446,8 @@ if __name__ == "__main__":
     models_loaded: Dict[str, Any] = {}
     model_errors_encountered = False
     
-    # Define ROB_ITEM_DESCRIPTIONS here if load_model_bert needs to access it for default rob_sent
-    # This was previously in rob_fn.py, but load_model_bert might need it.
-    # Or, ensure all .json arg files for BERT models have 'rob_sent' defined.
     ROB_ITEM_DESCRIPTIONS_FOR_BERT = {
         'welfare': 'Research investigators complied with animal welfare regulations' 
-        # Add other BERT items if they exist and might miss 'rob_sent' in their JSON
     }
 
     model_configs = {
@@ -490,7 +470,7 @@ if __name__ == "__main__":
     else:
         logger.info("Sentence extraction disabled. Skipping sentence model loading.")
 
-    for key, config_item in model_configs.items(): # Renamed config to config_item
+    for key, config_item in model_configs.items(): 
         logger.info(f"  Attempting to load model '{key}'...")
         try:
             arg_p = model_dir / config_item['arg']
@@ -504,14 +484,6 @@ if __name__ == "__main__":
                 if not fld_p.exists(): raise FileNotFoundError(f"Field file missing: {fld_p}")
                 models_loaded[key] = load_model_legacy(arg_p, pth_p, fld_p)
             elif config_item['type'] == 'bert':
-                # Pass the rob_item_key to load_model_bert if you want it to use ROB_ITEM_DESCRIPTIONS_FOR_BERT
-                # This requires load_model_bert in rob_fn to be updated to accept this and use it.
-                # For now, assuming rob_sent is in the JSON or load_model_bert handles it.
-                # If rob_sent is not in dsc_w0.json, load_model_bert will warn and it might be None.
-                # pred_bert in the worker will then use this potentially None rob_sent_desc.
-                # This needs to be robustly handled.
-                # A simple fix: load_model_bert could take the description directly.
-                # For now, relying on its current structure.
                 models_loaded[key] = load_model_bert(arg_p, pth_p)
             else:
                 logger.error(f"Unknown model type '{config_item['type']}' for '{key}'. Skipping.")
@@ -549,15 +521,15 @@ if __name__ == "__main__":
         processed_output_for_df = []
         for res_dict in output_data_list:
             if num_sents_to_extract > 0:
-                sentences_data_from_res = res_dict.pop('sentences', {}) # Default to empty dict if missing
-                if not isinstance(sentences_data_from_res, dict): # Ensure it's a dict
+                sentences_data_from_res = res_dict.pop('sentences', {}) 
+                if not isinstance(sentences_data_from_res, dict): 
                     logger.warning(f"Sentences data for {res_dict.get('id')} is not a dict: {sentences_data_from_res}. Skipping sentence flattening for this item.")
-                    sentences_data_from_res = {} # Reset to empty dict to avoid errors
+                    sentences_data_from_res = {} 
                 
                 for category_key_from_rob_items in ROB_ITEM_CATEGORIES: 
                     sents_list = sentences_data_from_res.get(category_key_from_rob_items, [])
-                    if not isinstance(sents_list, list): # Ensure sents_list is a list
-                        sents_list = [str(sents_list)] # Convert to list if it's a single error string
+                    if not isinstance(sents_list, list): 
+                        sents_list = [str(sents_list)] 
 
                     for i in range(num_sents_to_extract):
                         col_name = f"{category_key_from_rob_items}_sent_{i+1}"
@@ -576,26 +548,11 @@ if __name__ == "__main__":
                     cols_ordered.append(f"{category_key_from_rob_items}_sent_{i+1}")
         cols_ordered.extend(['processing_time_seconds', 'status', 'error_details', 'message'])
         
-        # Reindex to ensure all columns are present and in order, fill missing with NA
-        # This handles cases where a column might not have been created for some rows.
-        current_cols = output_df.columns.tolist()
-        final_cols = []
-        for col in cols_ordered:
-            if col in current_cols:
-                final_cols.append(col)
-            # else: # if you want to add missing columns with NA
-            #    output_df[col] = pd.NA 
-            #    final_cols.append(col)
-        
-        # If some expected columns are not in final_cols (e.g. sentence columns if num_sents_to_extract was 0 for all),
-        # they won't be included. This is generally fine.
-        # If you strictly need ALL cols_ordered, even if empty, add them with pd.NA before reindexing.
         for col in cols_ordered:
             if col not in output_df.columns:
-                output_df[col] = "" # Or pd.NA
+                output_df[col] = "" 
 
         output_df = output_df.reindex(columns=cols_ordered)
-
 
         try:
             output_df.to_csv(output_path, sep=',', encoding='utf-8', index=False)
@@ -604,3 +561,4 @@ if __name__ == "__main__":
             logger.error(f"Error saving output DataFrame to CSV {output_path}: {e}", exc_info=True)
             
     logger.info("--- RoB Prediction Script Finished ---")
+
